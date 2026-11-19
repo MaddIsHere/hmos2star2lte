@@ -46,12 +46,11 @@ cmake -S "$S/llvm" -B "$TB" "${COMMON[@]}" \
 ninja -C "$TB" llvm-tblgen llvm-min-tblgen 2>&1 | tail -30; [ -x "$TB/bin/llvm-tblgen" ] || { echo "target llvm-tblgen did not link"; exit 1; }
 ninja -C "$TB"
 ninja -C "$TB" install
-# --- llvm-config meson can run: the native one, with paths redirected to the target install -------------------
+# --- llvm-config meson can run on the build machine ------------------------------------------------------------
+# A copy of the native llvm-config (same version, AArch64 only) placed inside the ohos install: it finds its prefix
+# from its own location, so it reports the ohos libs and headers in $LLVM_PREFIX/{lib,include}.
 mkdir -p "$LLVM_PREFIX/bin"
-cat > "$LLVM_PREFIX/bin/llvm-config-host" <<EOW
-#!/bin/bash
-# native llvm-config (same version, same targets) answering with the ohos install
-"$NB/bin/llvm-config" "\$@" | sed -e "s#$NB/include#$LLVM_PREFIX/include#g" -e "s#$NB/lib#$LLVM_PREFIX/lib#g" -e "s#$NB/bin#$LLVM_PREFIX/bin#g" -e "s#$NB#$LLVM_PREFIX#g" -e "s#$S/llvm/include#$LLVM_PREFIX/include#g"
-EOW
-chmod +x "$LLVM_PREFIX/bin/llvm-config-host"
+cp "$NB/bin/llvm-config" "$LLVM_PREFIX/bin/llvm-config-host"
+"$LLVM_PREFIX/bin/llvm-config-host" --version --link-static --libs core native mcjit | head -5
+"$LLVM_PREFIX/bin/llvm-config-host" --shared-mode
 echo "LLVM $LLVM_VER for ohos -> $LLVM_PREFIX ($(du -sh "$LLVM_PREFIX/lib" | cut -f1) of libraries)"
