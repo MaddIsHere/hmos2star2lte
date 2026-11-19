@@ -12,10 +12,10 @@ on:
     inputs:
       mesa_repo:
         description: Mesa git repository
-        default: https://gitlab.freedesktop.org/mesa/mesa.git
-      mesa_date:
-        description: Mesa snapshot date (last commit on main before this day); the patches were made on a 2026-09-28 snapshot
-        default: "2026-09-28"
+        default: https://github.com/lfdevs/mesa-for-android-container.git
+      mesa_ref:
+        description: Mesa branch or tag
+        default: mesa-26.1.0-devel-20260404
       llvm_version:
         description: LLVM version
         default: "19.1.7"
@@ -35,9 +35,8 @@ jobs:
 
       - name: Tools
         run: |
-          sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
-          sudo apt-get -o Acquire::Retries=5 update
-          sudo apt-get -o Acquire::Retries=5 install -y clang lld llvm cmake ninja-build python3-mako python3-yaml python3-pip \
+          sudo apt-get update
+          sudo apt-get install -y clang lld llvm cmake ninja-build python3-mako python3-yaml python3-pip \
             glslang-tools bison flex pkg-config xz-utils curl patch libexpat1-dev
           pip install --break-system-packages 'meson>=1.4'
           sudo mkdir -p /mnt/work && sudo chown "$USER" /mnt/work
@@ -63,9 +62,8 @@ jobs:
 
       - name: Mesa source
         run: |
-          git clone "${{ inputs.mesa_repo }}" "$MESA_SRC"
+          git clone --depth 1 --single-branch --branch "${{ inputs.mesa_ref }}" "${{ inputs.mesa_repo }}" "$MESA_SRC"
           cd "$MESA_SRC"
-          git checkout "$(git rev-list -1 --before='${{ inputs.mesa_date }} 23:59' HEAD)"
           git log -1 --format='Mesa at %h %cd'
 
       - name: LLVM cache
