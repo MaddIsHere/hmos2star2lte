@@ -68,7 +68,7 @@ jobs:
 
       - name: LLVM cache
         id: llvmcache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             /mnt/work/llvm-ohos
@@ -78,6 +78,15 @@ jobs:
       - name: Build LLVM (about 1-2 h the first time)
         if: steps.llvmcache.outputs.cache-hit != 'true'
         run: bash build/build_llvm.sh
+
+      - name: Save LLVM cache (right away, so a later failure keeps it)
+        if: steps.llvmcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            /mnt/work/llvm-ohos
+            /mnt/work/llvm-native/bin
+          key: ${{ steps.llvmcache.outputs.cache-primary-key }}
 
       - name: Build Mesa with llvmpipe
         run: |
