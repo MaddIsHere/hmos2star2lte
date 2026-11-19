@@ -103,11 +103,13 @@ meson setup "$M/b" --force-fallback-for=zlib -Dzlib:default_library=static --cro
   -Dgles1=enabled -Dgles2=enabled -Dopengl=false -Dgbm=disabled -Dglx=disabled -Degl=enabled -Dllvm=$LLVMOPT "${EXTRA[@]}"
 ninja -C "$M/b"
 F=$REPO/patches/11-gpu-mesa/files/lib64/chipsetsdk; mkdir -p "$F"
-llvm-strip -o "$F/libEGL_impl.so" "$(find "$M/b" -name 'libEGL.so*' -type f | head -1)"
-llvm-strip -o "$F/libGLESv1_impl.so" "$(find "$M/b" -name 'libGLESv1_CM.so*' -type f | head -1)"
-llvm-strip -o "$F/libGLESv2_impl.so" "$(find "$M/b" -name 'libGLESv2.so*' -type f | head -1)"
+# real libraries only: meson also leaves *.symbols helper files with similar names
+pick() { find "$M/b" -name "$1" -type f ! -name '*.symbols' ! -name '*.p' ! -name '*.a' | head -1; }
+llvm-strip -o "$F/libEGL_impl.so" "$(pick 'libEGL.so*')"
+llvm-strip -o "$F/libGLESv1_impl.so" "$(pick 'libGLESv1_CM.so*')"
+llvm-strip -o "$F/libGLESv2_impl.so" "$(pick 'libGLESv2.so*')"
 cp "$F/libGLESv2_impl.so" "$F/libGLESv3_impl.so"
-llvm-strip -o "$F/libgallium-26.1.0-devel.so" "$(find "$M/b" -name 'libgallium-*.so' -type f | head -1)"
-cp "$(find "$M/b" -name 'libexpat.so.1.*' -type f | head -1)" "$F/libexpat.so.1"
+llvm-strip -o "$F/libgallium-26.1.0-devel.so" "$(pick 'libgallium-*.so')"
+cp "$(pick 'libexpat.so.1.*')" "$F/libexpat.so.1"
 llvm-strip "$F/libexpat.so.1"
 echo "Mesa -> $F"
