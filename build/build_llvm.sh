@@ -32,6 +32,9 @@ cmake -S "$S/llvm" -B "$TB" "${COMMON[@]}" \
   -DCMAKE_AR="$(command -v llvm-ar)" -DCMAKE_RANLIB="$(command -v llvm-ranlib)" \
   -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
   -DCMAKE_C_FLAGS="-O2 -g0" -DCMAKE_CXX_FLAGS="-O2 -g0 -fno-emulated-tls" \
+  -DCMAKE_EXE_LINKER_FLAGS="$SYSROOT/usr/lib/libc++.so $SYSROOT/usr/lib/libc.so" \
+  -DCMAKE_SHARED_LINKER_FLAGS="$SYSROOT/usr/lib/libc++.so $SYSROOT/usr/lib/libc.so" \
+  -DCMAKE_MODULE_LINKER_FLAGS="$SYSROOT/usr/lib/libc++.so $SYSROOT/usr/lib/libc.so" \
   -DLLVM_HOST_TRIPLE=aarch64-linux-ohos -DLLVM_DEFAULT_TARGET_TRIPLE=aarch64-linux-ohos \
   -DLLVM_TABLEGEN="$NB/bin/llvm-tblgen" -DLLVM_NATIVE_TOOL_DIR="$NB/bin" \
   -DLLVM_INCLUDE_TOOLS=OFF -DLLVM_BUILD_TOOLS=OFF -DLLVM_INCLUDE_UTILS=OFF -DLLVM_INCLUDE_TESTS=OFF \
@@ -39,6 +42,8 @@ cmake -S "$S/llvm" -B "$TB" "${COMMON[@]}" \
   -DLLVM_ENABLE_PLUGINS=OFF -DLLVM_ENABLE_BACKTRACES=OFF -DLLVM_ENABLE_PIC=ON \
   -DLLVM_ENABLE_THREADS=ON -DLLVM_BUILD_LLVM_DYLIB=OFF -DLLVM_ENABLE_BINDINGS=OFF \
   -DCMAKE_INSTALL_PREFIX="$LLVM_PREFIX"
+# the helper executables link first (fast): a libc++/stub problem shows up now, not after the long compile
+ninja -C "$TB" llvm-tblgen llvm-min-tblgen 2>&1 | tail -30; [ -x "$TB/bin/llvm-tblgen" ] || { echo "target llvm-tblgen did not link"; exit 1; }
 ninja -C "$TB"
 ninja -C "$TB" install
 # --- llvm-config meson can run: the native one, with paths redirected to the target install -------------------
