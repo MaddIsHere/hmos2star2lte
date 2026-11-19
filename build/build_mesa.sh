@@ -7,7 +7,14 @@ set -e
 O=$OH_SRC; M=$WORK/mesa-build; mkdir -p "$M/pc"
 cd "$MESA_SRC"
 PATCH=$REPO/src/mesa
-if ! grep -q with_platform_ohos meson.build; then patch -p1 -N < "$PATCH/0001-mesa-ohos-platform-for-sweet.patch"; fi
+if ! grep -q with_platform_ohos meson.build; then
+  patch -p1 -N < "$PATCH/0001-mesa-ohos-platform-for-sweet.patch" || true
+  # only the EGL->hilog logging hunk (egllog.c) may fail on other Mesa snapshots: it is not needed for rendering
+  bad=$(find . -name '*.rej' ! -name 'egllog.c.rej' | head -5)
+  [ -z "$bad" ] || { echo "ERROR: patch hunks rejected: $bad"; exit 1; }
+  rm -f src/egl/main/egllog.c.rej src/egl/main/egllog.c.orig
+  grep -q with_platform_ohos meson.build || { echo "ERROR: meson.build was not patched"; exit 1; }
+fi
 # --- fixes on top of the base patch (all idempotent) -------------------------
 python3 - <<'PYEOF'
 import re
