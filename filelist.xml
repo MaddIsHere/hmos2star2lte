@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+<component>
+<name>TCPU</name>
+<compress>0</compress>
+</component>
+<preAdjustFeature>false</preAdjustFeature>
+<rebootUpdate>true</rebootUpdate>
+<vabMaxStashInfo>0</vabMaxStashInfo>
+<maxStashInfo>52428800</maxStashInfo>
+<files>
+<file>
+<spath>versioninfo_for_ota.json</spath>
+<dpath>versioninfo_for_ota.json</dpath>
+<operation>c</operation>
+<sha256>AC4654D5D8B33A5492BD0298C4F8F6572F2D8517E11084DCFBD2B853ED29BF8E</sha256>
+<size>72</size>
+</file>
+<file>
+<spath>update_full_base.zip</spath>
+<dpath>update_full_base.zip</dpath>
+<operation>c</operation>
+<sha256>698BCE5A3E179F55C97424DA5D65BDBC102A767C632AC4809AB94235DD09F1CE</sha256>
+<size>5767170557</size>
+</file>
+</files>
+<supportPKI>1</supportPKI>
+<vendorInfo logfile="changelog_base.xml" name="base" package="update_full_base.zip" subpath=""/>
+</root>

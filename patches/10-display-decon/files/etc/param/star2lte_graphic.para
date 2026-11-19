@@ -1,0 +1,2 @@
+# S9+: no Huawei Vulkan driver, use the OpenGL ES path (Mesa)
+persist.sys.graphic.GpuApitype=0

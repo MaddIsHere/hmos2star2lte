@@ -1,0 +1,1298 @@
+From e9e85d54c3375d8515be49598210f458617424e5 Mon Sep 17 00:00:00 2001
+From: hmos2star2lte <noreply@example.invalid>
+Date: Thu, 5 Nov 2026 12:56:10 +0700
+Subject: [PATCH] OpenHarmony/HarmonyOS userspace support for exynos9810
+ 4.9.337 (ported from hmos2sweet 4.14 patches)
+
+---
+ arch/arm64/configs/vendor/ohos.config  |  25 ++
+ drivers/Kconfig                        |   4 +
+ drivers/Makefile                       |   1 +
+ drivers/accesstokenid/Kconfig          |   5 +
+ drivers/accesstokenid/Makefile         |   2 +
+ drivers/accesstokenid/access_tokenid.c | 413 +++++++++++++++++++++++++
+ drivers/accesstokenid/access_tokenid.h |  73 +++++
+ drivers/android/Kconfig                |   5 +
+ drivers/android/binder.c               | 113 ++++++-
+ drivers/md/dm-ioctl.c                  |  11 +
+ drivers/ohos/Kconfig                   |  36 +++
+ drivers/tty/sysrq.c                    |  12 +
+ fs/ioctl.c                             |  24 ++
+ fs/namespace.c                         |  78 +++++
+ include/linux/memcontrol.h             |   6 +
+ include/linux/sched.h                  |   4 +
+ include/uapi/linux/android/binder.h    |  20 ++
+ kernel/fork.c                          |   4 +
+ kernel/reboot.c                        |  32 ++
+ mm/memcontrol.c                        |  94 ++++++
+ security/selinux/selinuxfs.c           |  19 ++
+ 21 files changed, 980 insertions(+), 1 deletion(-)
+ create mode 100644 arch/arm64/configs/vendor/ohos.config
+ create mode 100644 drivers/accesstokenid/Kconfig
+ create mode 100644 drivers/accesstokenid/Makefile
+ create mode 100644 drivers/accesstokenid/access_tokenid.c
+ create mode 100644 drivers/accesstokenid/access_tokenid.h
+ create mode 100644 drivers/ohos/Kconfig
+
+diff --git a/arch/arm64/configs/vendor/ohos.config b/arch/arm64/configs/vendor/ohos.config
+new file mode 100644
+index 000000000..e7e023738
+--- /dev/null
++++ b/arch/arm64/configs/vendor/ohos.config
+@@ -0,0 +1,25 @@
++# HarmonyOS / OpenHarmony userspace on star2lte (Exynos 9810, 4.9.337) - merge over star2lte_defconfig
++CONFIG_ACCESS_TOKENID=y
++CONFIG_BINDER_SENDER_INFO=y
++CONFIG_OHOS_FS_EMU=y
++CONFIG_OHOS_FSVERITY_STUB=y
++CONFIG_OHOS_BRINGUP_NOREBOOT=y
++CONFIG_OHOS_BRINGUP_PERMISSIVE=y
++CONFIG_SECURITY_SELINUX_DEVELOP=y
++# OHOS does not use Android's AID_INET socket gating
++# CONFIG_ANDROID_PARANOID_NETWORK is not set
++# OHOS init creates /dev/binder from uevents; binderfs would hide the misc devices
++# CONFIG_ANDROID_BINDERFS is not set
++CONFIG_ANDROID_BINDER_DEVICES="binder,hwbinder,vndbinder"
++# persistent logs for bring-up (read from TWRP: /sys/fs/pstore)
++CONFIG_PSTORE=y
++CONFIG_PSTORE_CONSOLE=y
++CONFIG_PSTORE_PMSG=y
++CONFIG_PSTORE_RAM=y
++CONFIG_DEVTMPFS=y
++CONFIG_TMPFS=y
++CONFIG_TMPFS_XATTR=y
++CONFIG_CGROUP_FREEZER=y
++CONFIG_MEMCG=y
++CONFIG_ZRAM=y
++CONFIG_PSI=y
+diff --git a/drivers/Kconfig b/drivers/Kconfig
+index 242bac518..a5d6fc844 100644
+--- a/drivers/Kconfig
++++ b/drivers/Kconfig
+@@ -200,6 +200,10 @@ source "drivers/thunderbolt/Kconfig"
+ 
+ source "drivers/android/Kconfig"
+ 
++source "drivers/accesstokenid/Kconfig"
++
++source "drivers/ohos/Kconfig"
++
+ source "drivers/nvdimm/Kconfig"
+ 
+ source "drivers/dax/Kconfig"
+diff --git a/drivers/Makefile b/drivers/Makefile
+index 0f8a8658b..ad255e85d 100644
+--- a/drivers/Makefile
++++ b/drivers/Makefile
+@@ -184,6 +184,7 @@ obj-$(CONFIG_CORESIGHT)		+= hwtracing/coresight/
+ obj-y				+= hwtracing/intel_th/
+ obj-$(CONFIG_STM)		+= hwtracing/stm/
+ obj-$(CONFIG_ANDROID)		+= android/
++obj-$(CONFIG_ACCESS_TOKENID)	+= accesstokenid/
+ obj-$(CONFIG_NVMEM)		+= nvmem/
+ obj-$(CONFIG_FPGA)		+= fpga/
+ 
+diff --git a/drivers/accesstokenid/Kconfig b/drivers/accesstokenid/Kconfig
+new file mode 100644
+index 000000000..30d2957a1
+--- /dev/null
++++ b/drivers/accesstokenid/Kconfig
+@@ -0,0 +1,5 @@
++# SPDX-License-Identifier: GPL-2.0
++config ACCESS_TOKENID
++	bool "Access task's token"
++	default n
++
+diff --git a/drivers/accesstokenid/Makefile b/drivers/accesstokenid/Makefile
+new file mode 100644
+index 000000000..738a550f8
+--- /dev/null
++++ b/drivers/accesstokenid/Makefile
+@@ -0,0 +1,2 @@
++# SPDX-License-Identifier: GPL-2.0-only
++obj-$(CONFIG_ACCESS_TOKENID)		+= access_tokenid.o
+diff --git a/drivers/accesstokenid/access_tokenid.c b/drivers/accesstokenid/access_tokenid.c
+new file mode 100644
+index 000000000..08a6cab61
+--- /dev/null
++++ b/drivers/accesstokenid/access_tokenid.c
+@@ -0,0 +1,413 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * access_tokenid.c
++ *
++ * Copyright (C) 2022-2023 Huawei Technologies Co., Ltd. All rights reserved.
++ *
++ */
++
++#define pr_fmt(fmt) "access_token_id: " fmt
++
++#include <linux/errno.h>
++#include <linux/fs.h>
++#include <linux/miscdevice.h>
++#include <linux/module.h>
++#include <linux/rwlock.h>
++#include <linux/sched.h>
++#include <linux/slab.h>
++#include <linux/uaccess.h>
++#include <linux/cred.h>
++#include "access_tokenid.h"
++
++DEFINE_RWLOCK(token_rwlock);
++#define ACCESS_TOKEN_UID KUIDT_INIT(3020)
++/* uid of nwebspawn in HarmonyOS /system/etc/passwd */
++#ifndef NWEBSPAWN_UID
++#define NWEBSPAWN_UID KUIDT_INIT(3081)
++#endif
++#define MAX_NODE_NUM 500
++#define UINT32_T_BITS 32
++
++static struct kmem_cache *g_cache = NULL;
++static struct token_perm_node *g_token_perm_root = NULL;
++static size_t g_total_node_num = 0;
++
++int access_tokenid_get_tokenid(struct file *file, void __user *uarg)
++{
++	return copy_to_user(uarg, &current->token,
++			    sizeof(current->token)) ? -EFAULT : 0;
++}
++
++static bool check_permission_for_set_tokenid(struct file *file, unsigned long long tokenid)
++{
++	kuid_t uid = current_uid();
++	struct inode *inode = file->f_inode;
++	access_tokenid_inner *tokenid_inner = (access_tokenid_inner *)&tokenid;
++
++	if (inode == NULL) {
++		pr_err("%s: file inode is null\n", __func__);
++		return false;
++	}
++
++	if (uid_eq(uid, GLOBAL_ROOT_UID) ||
++	    uid_eq(uid, inode->i_uid)) {
++		return true;
++	} else if (uid_eq(uid, NWEBSPAWN_UID) && (tokenid_inner->render_flag == 1)) {
++		return true;
++	}
++
++	return false;
++}
++
++int access_tokenid_set_tokenid(struct file *file, void __user *uarg)
++{
++	unsigned long long tmp = 0;
++
++	if (copy_from_user(&tmp, uarg, sizeof(tmp)))
++		return -EFAULT;
++
++	if (!check_permission_for_set_tokenid(file, tmp))
++		return -EPERM;
++
++	current->token = tmp;
++	return 0;
++}
++
++static bool check_permission_for_ftokenid(struct file *file)
++{
++	int i;
++	struct group_info *group_info;
++	kuid_t uid = current_uid();
++	struct inode *inode = file->f_inode;
++
++	if (inode == NULL) {
++		pr_err("%s: file inode is null\n", __func__);
++		return false;
++	}
++
++	if (uid_eq(uid, GLOBAL_ROOT_UID))
++		return true;
++
++	group_info = get_current_groups();
++	for (i = 0; i < group_info->ngroups; i++) {
++		kgid_t gid = group_info->gid[i];
++
++		if (gid_eq(gid, inode->i_gid)) {
++			put_group_info(group_info);
++			return true;
++		}
++	}
++
++	put_group_info(group_info);
++	return false;
++}
++
++int access_tokenid_get_ftokenid(struct file *file, void __user *uarg)
++{
++	if (!check_permission_for_ftokenid(file))
++		return -EPERM;
++
++	return copy_to_user(uarg, &current->ftoken,
++			    sizeof(current->ftoken)) ? -EFAULT : 0;
++}
++
++int access_tokenid_set_ftokenid(struct file *file, void __user *uarg)
++{
++	unsigned long long tmp = 0;
++
++	if (!check_permission_for_ftokenid(file))
++		return -EPERM;
++
++	if (copy_from_user(&tmp, uarg, sizeof(tmp)))
++		return -EFAULT;
++
++	current->ftoken = tmp;
++	return 0;
++}
++
++static bool check_permission_for_set_token_permission(void)
++{
++	kuid_t uid = current_uid();
++	return uid_eq(uid, ACCESS_TOKEN_UID);
++}
++
++static void add_node_to_left_tree_tail(struct token_perm_node *root_node, struct token_perm_node *node)
++{
++	if ((root_node == NULL) || (node == NULL))
++		return;
++
++	struct token_perm_node *current_node = root_node;
++	while (true) {
++		if (current_node->left == NULL) {
++			current_node->left = node;
++			break;
++		}
++		current_node = current_node->left;
++	}
++}
++
++static void find_node_by_token(struct token_perm_node *root_node, uint32_t token,
++	struct token_perm_node **target_node, struct token_perm_node **parent_node)
++{
++	*target_node = NULL;
++	*parent_node = NULL;
++	struct token_perm_node *current_node = root_node;
++	while (current_node != NULL) {
++		if (current_node->perm_data.token == token) {
++			*target_node = current_node;
++			break;
++		}
++		*parent_node = current_node;
++		if (current_node->perm_data.token > token) {
++			current_node = current_node->left;
++		} else {
++			current_node = current_node->right;
++		}
++	}
++}
++
++static int add_node_to_tree(struct token_perm_node **root_node, struct token_perm_node *node)
++{
++	if (root_node == NULL) {
++		pr_err("%s: invalid root_node.\n", __func__);
++		return -EINVAL;
++	}
++	struct token_perm_node *target_node = NULL;
++	struct token_perm_node *parent_node = NULL;
++	find_node_by_token(*root_node, node->perm_data.token, &target_node, &parent_node);
++	if (target_node != NULL) {
++		target_node->perm_data = node->perm_data;
++		return 0;
++	}
++	if (g_total_node_num >= MAX_NODE_NUM) {
++		pr_err("%s: the number of token nodes is exceeded.\n", __func__);
++		return -EDQUOT;
++	}
++	if (parent_node == NULL) {
++		*root_node = node;
++	} else if (parent_node->perm_data.token > node->perm_data.token) {
++		parent_node->left = node;
++	} else {
++		parent_node->right = node;
++	}
++	g_total_node_num++;
++	return 1;
++}
++
++static struct token_perm_node *remove_node_by_token(struct token_perm_node **root_node, uint32_t token)
++{
++	if (root_node == NULL) {
++		pr_err("%s: invalid root_node.\n", __func__);
++		return NULL;
++	}
++	struct token_perm_node *target_node = NULL;
++	struct token_perm_node *parent_node = NULL;
++	find_node_by_token(*root_node, token, &target_node, &parent_node);
++	if (target_node == NULL) {
++		pr_err("%s: target token to be removed not found.\n", __func__);
++		return NULL;
++	}
++
++	struct token_perm_node **new_node_addr = NULL;
++	if (parent_node == NULL) {
++		new_node_addr = root_node;
++	} else if (parent_node->perm_data.token > token) {
++		new_node_addr = &(parent_node->left);
++	} else {
++		new_node_addr = &(parent_node->right);
++	}
++	if (target_node->right != NULL) {
++		*new_node_addr = target_node->right;
++		add_node_to_left_tree_tail(target_node->right, target_node->left);
++	} else {
++		*new_node_addr = target_node->left;
++	}
++	g_total_node_num--;
++	return target_node;
++}
++
++int access_tokenid_add_permission(struct file *file, void __user *uarg)
++{
++	if (!check_permission_for_set_token_permission())
++		return -EPERM;
++
++	struct token_perm_node *node = kmem_cache_zalloc(g_cache, GFP_KERNEL);
++	if (node == NULL)
++		return -ENOMEM;
++	if (copy_from_user(&(node->perm_data), uarg, sizeof(ioctl_add_perm_data))) {
++		kmem_cache_free(g_cache, node);
++		return -EFAULT;
++	}
++
++	write_lock(&token_rwlock);
++	int ret = add_node_to_tree(&g_token_perm_root, node);
++	write_unlock(&token_rwlock);
++	if (ret <= 0) {
++		kmem_cache_free(g_cache, node);
++		return ret;
++	}
++	return 0;
++}
++
++int access_tokenid_remove_permission(struct file *file, void __user *uarg)
++{
++	if (!check_permission_for_set_token_permission())
++		return -EPERM;
++
++	uint32_t token = 0;
++	if (copy_from_user(&token, uarg, sizeof(token)))
++		return -EFAULT;
++
++	write_lock(&token_rwlock);
++	struct token_perm_node *target_node = remove_node_by_token(&g_token_perm_root, token);
++	if (target_node != NULL)
++		kmem_cache_free(g_cache, target_node);
++	write_unlock(&token_rwlock);
++
++	return 0;
++}
++
++int access_tokenid_set_permission(struct file *file, void __user *uarg)
++{
++	if (!check_permission_for_set_token_permission())
++		return -EPERM;
++
++	ioctl_set_get_perm_data set_perm_data;
++	if (copy_from_user(&set_perm_data, uarg, sizeof(set_perm_data)))
++		return -EFAULT;
++
++	uint32_t idx = set_perm_data.op_code / UINT32_T_BITS;
++	if (idx >= MAX_PERM_GROUP_NUM) {
++		pr_err("%s: invalid op_code.\n", __func__);
++		return -EINVAL;
++	}
++
++	struct token_perm_node *target_node = NULL;
++	struct token_perm_node *parent_node = NULL;
++	write_lock(&token_rwlock);
++	find_node_by_token(g_token_perm_root, set_perm_data.token, &target_node, &parent_node);
++	if (target_node == NULL) {
++		write_unlock(&token_rwlock);
++		pr_err("%s: token not found.\n", __func__);
++		return -ENODATA;
++	}
++	uint32_t bit_idx = set_perm_data.op_code % UINT32_T_BITS;
++	if (set_perm_data.is_granted) {
++		target_node->perm_data.perm[idx] |= (uint32_t)0x01 << bit_idx;
++	} else {
++		target_node->perm_data.perm[idx] &= ~((uint32_t)0x01 << bit_idx);
++	}
++	write_unlock(&token_rwlock);
++	return 0;
++}
++
++int access_tokenid_get_permission(struct file *file, void __user *uarg)
++{
++	ioctl_set_get_perm_data get_perm_data;
++	if (copy_from_user(&get_perm_data, uarg, sizeof(get_perm_data)))
++		return -EFAULT;
++
++	uint32_t idx = get_perm_data.op_code / UINT32_T_BITS;
++	if (idx >= MAX_PERM_GROUP_NUM) {
++		pr_err("%s: invalid op_code.\n", __func__);
++		return -EINVAL;
++	}
++
++	struct token_perm_node *target_node = NULL;
++	struct token_perm_node *parent_node = NULL;
++	read_lock(&token_rwlock);
++	find_node_by_token(g_token_perm_root, get_perm_data.token, &target_node, &parent_node);
++	if (target_node == NULL) {
++		read_unlock(&token_rwlock);
++		return -ENODATA;
++	}
++
++	uint32_t bit_idx = get_perm_data.op_code % UINT32_T_BITS;
++	int ret = (target_node->perm_data.perm[idx] & ((uint32_t)0x01 << bit_idx)) >> bit_idx;
++	read_unlock(&token_rwlock);
++	return ret;
++}
++
++typedef int (*access_token_id_func)(struct file *file, void __user *arg);
++
++static access_token_id_func g_func_array[ACCESS_TOKENID_MAX_NR] = {
++	NULL, /* reserved */
++	access_tokenid_get_tokenid,
++	access_tokenid_set_tokenid,
++	access_tokenid_get_ftokenid,
++	access_tokenid_set_ftokenid,
++	access_tokenid_add_permission,
++	access_tokenid_remove_permission,
++	access_tokenid_get_permission,
++	access_tokenid_set_permission,
++};
++
++static long access_tokenid_ioctl(struct file *file, unsigned int cmd,
++				 unsigned long arg)
++{
++	void __user *uarg = (void __user *)arg;
++	unsigned int func_cmd = _IOC_NR(cmd);
++
++	if (uarg == NULL) {
++		pr_err("%s: invalid user uarg\n", __func__);
++		return -EINVAL;
++	}
++
++	if (_IOC_TYPE(cmd) != ACCESS_TOKEN_ID_IOCTL_BASE) {
++		pr_err("%s: access tokenid magic fail, TYPE=%d\n",
++		       __func__, _IOC_TYPE(cmd));
++		return -EINVAL;
++	}
++
++	if (func_cmd >= ACCESS_TOKENID_MAX_NR) {
++		pr_err("%s: access tokenid cmd error, cmd:%d\n",
++			__func__, func_cmd);
++		return -EINVAL;
++	}
++
++	if (g_func_array[func_cmd])
++		return (*g_func_array[func_cmd])(file, uarg);
++
++	return -EINVAL;
++}
++
++static const struct file_operations access_tokenid_fops = {
++	.owner		= THIS_MODULE,
++	.unlocked_ioctl	= access_tokenid_ioctl,
++	.compat_ioctl	= access_tokenid_ioctl,
++};
++
++static struct miscdevice access_tokenid_device = {
++	.minor	= MISC_DYNAMIC_MINOR,
++	.name	= "access_token_id",
++	.fops	= &access_tokenid_fops,
++};
++
++static int access_tokenid_init_module(void)
++{
++	int err;
++
++	err = misc_register(&access_tokenid_device);
++	if (err < 0) {
++		pr_err("access_tokenid register failed\n");
++		return err;
++	}
++
++	g_cache = kmem_cache_create("access_token_node", sizeof(struct token_perm_node), 0, SLAB_HWCACHE_ALIGN, NULL);
++	if (g_cache == NULL) {
++		pr_err("access_tokenid kmem_cache create failed\n");
++		return -ENOMEM;
++	}
++	pr_info("access_tokenid init success\n");
++	return 0;
++}
++
++static void access_tokenid_exit_module(void)
++{
++	kmem_cache_destroy(g_cache);
++	misc_deregister(&access_tokenid_device);
++}
++
++/* module entry points */
++module_init(access_tokenid_init_module);
++module_exit(access_tokenid_exit_module);
+diff --git a/drivers/accesstokenid/access_tokenid.h b/drivers/accesstokenid/access_tokenid.h
+new file mode 100644
+index 000000000..7eb3119ef
+--- /dev/null
++++ b/drivers/accesstokenid/access_tokenid.h
+@@ -0,0 +1,73 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * access_tokenid.h
++ *
++ * Copyright (C) 2022-2023 Huawei Technologies Co., Ltd. All rights reserved.
++ *
++ */
++
++#ifndef _ACCESS_TOKEN_ID_H
++#define _ACCESS_TOKEN_ID_H
++
++#include <linux/ioctl.h>
++#include <linux/types.h>
++
++#define	ACCESS_TOKEN_ID_IOCTL_BASE	'A'
++#define MAX_PERM_GROUP_NUM 64
++
++enum {
++	GET_TOKEN_ID = 1,
++	SET_TOKEN_ID,
++	GET_FTOKEN_ID,
++	SET_FTOKEN_ID,
++	ADD_PERMISSIONS,
++	REMOVE_PERMISSIONS,
++	GET_PERMISSION,
++	SET_PERMISSION,
++	ACCESS_TOKENID_MAX_NR
++};
++
++typedef struct {
++	unsigned int token_uniqueid : 20;
++	unsigned int res : 5;
++	unsigned int render_flag : 1;
++	unsigned int dlp_flag : 1;
++	unsigned int type : 2;
++	unsigned int version : 3;
++} access_tokenid_inner;
++
++typedef struct {
++	uint32_t token;
++	uint32_t op_code;
++	bool is_granted;
++} ioctl_set_get_perm_data;
++
++typedef struct {
++	uint32_t token;
++	uint32_t perm[MAX_PERM_GROUP_NUM];
++} ioctl_add_perm_data;
++
++struct token_perm_node {
++	ioctl_add_perm_data perm_data;
++	struct token_perm_node *left;
++	struct token_perm_node *right;
++};
++
++#define	ACCESS_TOKENID_GET_TOKENID \
++	_IOR(ACCESS_TOKEN_ID_IOCTL_BASE, GET_TOKEN_ID, unsigned long long)
++#define	ACCESS_TOKENID_SET_TOKENID \
++	_IOW(ACCESS_TOKEN_ID_IOCTL_BASE, SET_TOKEN_ID, unsigned long long)
++#define	ACCESS_TOKENID_GET_FTOKENID \
++	_IOR(ACCESS_TOKEN_ID_IOCTL_BASE, GET_FTOKEN_ID, unsigned long long)
++#define	ACCESS_TOKENID_SET_FTOKENID \
++	_IOW(ACCESS_TOKEN_ID_IOCTL_BASE, SET_FTOKEN_ID, unsigned long long)
++#define	ACCESS_TOKENID_ADD_PERMISSIONS \
++	_IOW(ACCESS_TOKEN_ID_IOCTL_BASE, ADD_PERMISSIONS, ioctl_add_perm_data)
++#define	ACCESS_TOKENID_REMOVE_PERMISSIONS \
++	_IOW(ACCESS_TOKEN_ID_IOCTL_BASE, REMOVE_PERMISSIONS, uint32_t)
++#define	ACCESS_TOKENID_GET_PERMISSION \
++	_IOW(ACCESS_TOKEN_ID_IOCTL_BASE, GET_PERMISSION, ioctl_set_get_perm_data)
++#define	ACCESS_TOKENID_SET_PERMISSION \
++	_IOW(ACCESS_TOKEN_ID_IOCTL_BASE, SET_PERMISSION, ioctl_set_get_perm_data)
++
++#endif /* _ACCESS_TOKEN_ID_H */
+diff --git a/drivers/android/Kconfig b/drivers/android/Kconfig
+index 63ed9ceeb..04398b9a3 100644
+--- a/drivers/android/Kconfig
++++ b/drivers/android/Kconfig
+@@ -41,6 +41,11 @@ config ANDROID_BINDER_IPC_SELFTEST
+ 	  exhaustively with combinations of various buffer sizes and
+ 	  alignments.
+ 
++config BINDER_SENDER_INFO
++	bool "OpenHarmony: binder sender info ioctl"
++	depends on ANDROID_BINDER_IPC
++	default n
++
+ endif # if ANDROID
+ 
+ endmenu
+diff --git a/drivers/android/binder.c b/drivers/android/binder.c
+index 76e6bbbc1..bfbbd2099 100644
+--- a/drivers/android/binder.c
++++ b/drivers/android/binder.c
+@@ -666,8 +666,27 @@ struct binder_thread {
+ 	atomic_t tmp_ref;
+ 	bool is_dead;
+ 	struct task_struct *task;
++#ifdef CONFIG_ACCESS_TOKENID
++	struct access_token tokens;
++#endif
++#ifdef CONFIG_BINDER_SENDER_INFO
++	__u64 sender_pid_nr;
++#endif
+ };
+ 
++#ifdef CONFIG_ACCESS_TOKENID
++#define ENABLE_ACCESS_TOKENID 1
++#else
++#define ENABLE_ACCESS_TOKENID 0
++#endif
++#ifdef CONFIG_BINDER_SENDER_INFO
++#define ENABLE_BINDER_SENDER_INFO 1
++#else
++#define ENABLE_BINDER_SENDER_INFO 0
++#endif
++#define BINDER_CURRENT_FEATURE_SET \
++	((ENABLE_ACCESS_TOKENID << 0) | (ENABLE_BINDER_SENDER_INFO << 2))
++
+ struct binder_transaction {
+ 	int debug_id;
+ 	struct binder_work work;
+@@ -694,6 +713,14 @@ struct binder_transaction {
+ 	 * during thread teardown
+ 	 */
+ 	spinlock_t lock;
++#ifdef CONFIG_ACCESS_TOKENID
++	u64 sender_tokenid;
++	u64 first_tokenid;
++#endif
++	/* OpenHarmony: one-way transactions still report the sender pid
++	 * (render_service, samgr... check it for async calls too) */
++	pid_t async_from_pid;
++	pid_t async_from_tid;
+ };
+ 
+ /**
+@@ -3388,7 +3415,15 @@ static void binder_transaction(struct binder_proc *proc,
+ 		t->from = thread;
+ 	else
+ 		t->from = NULL;
++	if (!reply && (tr->flags & TF_ONE_WAY)) {
++		t->async_from_pid = current->tgid;
++		t->async_from_tid = current->pid;
++	}
+ 	t->sender_euid = task_euid(proc->tsk);
++#ifdef CONFIG_ACCESS_TOKENID
++	t->sender_tokenid = current->token;
++	t->first_tokenid = current->ftoken;
++#endif
+ 	t->to_proc = target_proc;
+ 	t->to_thread = target_thread;
+ 	t->code = tr->code;
+@@ -4701,8 +4736,18 @@ static int binder_thread_read(struct binder_proc *proc,
+ 			trd->sender_pid =
+ 				task_tgid_nr_ns(sender,
+ 						task_active_pid_ns(current));
++#ifdef CONFIG_BINDER_SENDER_INFO
++			binder_inner_proc_lock(thread->proc);
++			thread->sender_pid_nr = task_tgid_nr(sender);
++			binder_inner_proc_unlock(thread->proc);
++#endif
+ 		} else {
+-			trd->sender_pid = 0;
++			trd->sender_pid = t->async_from_pid;
++#ifdef CONFIG_BINDER_SENDER_INFO
++			binder_inner_proc_lock(thread->proc);
++			thread->sender_pid_nr = t->async_from_pid;
++			binder_inner_proc_unlock(thread->proc);
++#endif
+ 		}
+ 
+ 		trd->data_size = t->buffer->data_size;
+@@ -4755,6 +4800,12 @@ static int binder_thread_read(struct binder_proc *proc,
+ 		if (t_from)
+ 			binder_thread_dec_tmpref(t_from);
+ 		t->buffer->allow_user_free = 1;
++#ifdef CONFIG_ACCESS_TOKENID
++		binder_inner_proc_lock(thread->proc);
++		thread->tokens.sender_tokenid = t->sender_tokenid;
++		thread->tokens.first_tokenid = t->first_tokenid;
++		binder_inner_proc_unlock(thread->proc);
++#endif
+ 		if (cmd != BR_REPLY && !(t->flags & TF_ONE_WAY)) {
+ 			binder_inner_proc_lock(thread->proc);
+ 			t->to_parent = thread->transaction_stack;
+@@ -5389,6 +5440,66 @@ static long binder_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+ 		}
+ 		break;
+ 	}
++	case BINDER_FEATURE_SET: {
++		struct binder_feature_set __user *features = ubuf;
++
++		if (size != sizeof(struct binder_feature_set)) {
++			ret = -EINVAL;
++			goto err;
++		}
++		if (put_user((__u64)BINDER_CURRENT_FEATURE_SET,
++			     &features->feature_set)) {
++			ret = -EFAULT;
++			goto err;
++		}
++		break;
++	}
++#ifdef CONFIG_ACCESS_TOKENID
++	case BINDER_GET_ACCESS_TOKEN: {
++		struct access_token __user *tokens = ubuf;
++		u64 token, ftoken;
++
++		if (size != sizeof(struct access_token)) {
++			ret = -EINVAL;
++			goto err;
++		}
++		binder_inner_proc_lock(proc);
++		token = thread->tokens.sender_tokenid;
++		ftoken = thread->tokens.first_tokenid;
++		binder_inner_proc_unlock(proc);
++		if (put_user(token, &tokens->sender_tokenid) ||
++		    put_user(ftoken, &tokens->first_tokenid)) {
++			ret = -EFAULT;
++			goto err;
++		}
++		break;
++	}
++#endif
++#ifdef CONFIG_BINDER_SENDER_INFO
++	case BINDER_GET_SENDER_INFO: {
++		struct binder_sender_info __user *sender = ubuf;
++		u64 token = 0, ftoken = 0, sender_pid_nr;
++
++		if (size != sizeof(struct binder_sender_info)) {
++			ret = -EINVAL;
++			goto err;
++		}
++		binder_inner_proc_lock(proc);
++#ifdef CONFIG_ACCESS_TOKENID
++		token = thread->tokens.sender_tokenid;
++		ftoken = thread->tokens.first_tokenid;
++#endif
++		sender_pid_nr = thread->sender_pid_nr;
++		binder_inner_proc_unlock(proc);
++		if (put_user(token, &sender->tokens.sender_tokenid) ||
++		    put_user(ftoken, &sender->tokens.first_tokenid) ||
++		    put_user(sender_pid_nr, &sender->sender_pid_nr)) {
++			ret = -EFAULT;
++			goto err;
++		}
++		break;
++	}
++#endif
+ 	case BINDER_GET_NODE_INFO_FOR_REF: {
+ 		struct binder_node_info_for_ref info;
+ 
+diff --git a/drivers/md/dm-ioctl.c b/drivers/md/dm-ioctl.c
+index 3a4280ad1..4276704fb 100644
+--- a/drivers/md/dm-ioctl.c
++++ b/drivers/md/dm-ioctl.c
+@@ -1969,6 +1969,17 @@ int dm_ioctl_export(struct mapped_device *md, const char *name,
+  * @name: Buffer (size DM_NAME_LEN) for name
+  * @uuid: Buffer (size DM_UUID_LEN) for uuid or empty string if uuid not defined
+  */
++#ifdef CONFIG_OHOS_DM_PARTNAME
++int dm_disk_partname(struct gendisk *disk, char *name)
++{
++	struct mapped_device *md = disk->private_data;
++
++	if (!md)
++		return -ENODEV;
++	return dm_copy_name_and_uuid(md, name, NULL);
++}
++#endif
++
+ int dm_copy_name_and_uuid(struct mapped_device *md, char *name, char *uuid)
+ {
+ 	int r = 0;
+diff --git a/drivers/ohos/Kconfig b/drivers/ohos/Kconfig
+new file mode 100644
+index 000000000..e22d66e2b
+--- /dev/null
++++ b/drivers/ohos/Kconfig
+@@ -0,0 +1,36 @@
++menu "OpenHarmony / HarmonyOS userspace support"
++
++config OHOS_DM_PARTNAME
++	bool "Report device-mapper device names as PARTNAME in uevents"
++	depends on BLK_DEV_DM=y
++	default n
++	help
++	  OpenHarmony init creates /dev/block/by-name links only from the
++	  PARTNAME uevent variable. Exposing the dm name lets logical
++	  partitions mapped from the Android super partition be found
++	  by name (system, vendor, chip_prod, sys_prod, ...).
++
++config OHOS_BRINGUP_NOREBOOT
++	bool "Allow refusing HarmonyOS init 'panic' reboots (hmos.noreboot=1)"
++	default n
++
++config OHOS_BRINGUP_PERMISSIVE
++	bool "Allow forcing SELinux permissive (hmos.permissive=1)"
++	depends on SECURITY_SELINUX_DEVELOP
++	default n
++
++config OHOS_FS_EMU
++	bool "Emulate hmdfs and sharefs mounts (tmpfs + bind)"
++	default n
++	help
++	  HarmonyOS storage_daemon needs the hmdfs and sharefs filesystems to
++	  start a user.  Emulate their local (non-distributed) views.
++
++config OHOS_FSVERITY_STUB
++	bool "Accept fs-verity / code-sign enable ioctls as no-ops"
++	default n
++	help
++	  Lets HarmonyOS installd install HAPs with native libraries on a
++	  kernel without fs-verity.  No integrity is enforced.
++
++endmenu
+diff --git a/drivers/tty/sysrq.c b/drivers/tty/sysrq.c
+index 899f2cad3..2ef48738b 100644
+--- a/drivers/tty/sysrq.c
++++ b/drivers/tty/sysrq.c
+@@ -1104,6 +1104,18 @@ static ssize_t write_sysrq_trigger(struct file *file, const char __user *buf,
+ 
+ 		if (get_user(c, buf))
+ 			return -EFAULT;
++#ifdef CONFIG_OHOS_BRINGUP_NOREBOOT
++		{
++			extern bool hmos_noreboot;
++
++			/* HarmonyOS init "panics" by writing 'c' here */
++			if (hmos_noreboot && (c == 'c' || c == 'b' || c == 'o')) {
++				pr_emerg("hmos: refusing sysrq '%c' from %s[%d] (hmos.noreboot=1)\n",
++					 c, current->comm, task_pid_nr(current));
++				return count;
++			}
++		}
++#endif
+ 		__handle_sysrq(c, false);
+ 	}
+ 
+diff --git a/fs/ioctl.c b/fs/ioctl.c
+index b3ba9a60d..525e1951c 100644
+--- a/fs/ioctl.c
++++ b/fs/ioctl.c
+@@ -623,6 +623,30 @@ int do_vfs_ioctl(struct file *filp, unsigned int fd, unsigned int cmd,
+ 	int __user *argp = (int __user *)arg;
+ 	struct inode *inode = file_inode(filp);
+ 
++#ifdef CONFIG_OHOS_FSVERITY_STUB
++	/*
++	 * HarmonyOS installd enables fs-verity / code signing on every native
++	 * library it installs and aborts the install when that fails.  This
++	 * kernel has no fs-verity and no code-sign enforcement (XPM), so accept
++	 * FS_IOC_ENABLE_VERITY ('f', 133) and FS_IOC_ENABLE_CODE_SIGN ('f', 200)
++	 * on regular files as a no-op.
++	 */
++	if (_IOC_TYPE(cmd) == 'f' && _IOC_DIR(cmd) == _IOC_WRITE &&
++	    (_IOC_NR(cmd) == 133 || _IOC_NR(cmd) == 200) && S_ISREG(inode->i_mode))
++		return 0;
++	/* ...and report every regular file as verity-enabled (FS_VERITY_FL),
++	 * which is what installd checks after enabling */
++	if (cmd == FS_IOC_GETFLAGS && S_ISREG(inode->i_mode)) {
++		unsigned int flags;
++
++		error = vfs_ioctl(filp, cmd, arg);
++		if (!error && !get_user(flags, (unsigned int __user *)argp))
++			error = put_user(flags | 0x00100000 /* FS_VERITY_FL */,
++					 (unsigned int __user *)argp);
++		return error;
++	}
++#endif
++
+ 	switch (cmd) {
+ 	case FIOCLEX:
+ 		set_close_on_exec(fd, 1);
+diff --git a/fs/namespace.c b/fs/namespace.c
+index e7fb58ef8..a1f467b64 100644
+--- a/fs/namespace.c
++++ b/fs/namespace.c
+@@ -3653,6 +3653,78 @@ struct dentry *mount_subtree(struct vfsmount *mnt, const char *name)
+ }
+ EXPORT_SYMBOL(mount_subtree);
+ 
++#ifdef CONFIG_OHOS_FS_EMU
++/*
++ * HarmonyOS storage_daemon mounts "hmdfs" (distributed fs) and "sharefs" on
++ * every user start.  This kernel has neither, so emulate the local-only
++ * behaviour with what exists:
++ *   hmdfs  src -> dst : tmpfs on dst with device_view/local, merge_view and
++ *                       cloud_merge_view, each a bind mount of src
++ *   sharefs src -> dst: bind mount of src
++ */
++static long ohos_fs_emu_mount(const char *dev, const char __user *udir,
++			      const char *type, unsigned long flags)
++{
++	static const char * const views[] = {
++		"device_view/local", "merge_view", "cloud_merge_view",
++	};
++	char *dir, *p;
++	mm_segment_t old_fs;
++	long ret;
++	int i;
++
++	dir = strndup_user(udir, PATH_MAX);
++	if (IS_ERR(dir))
++		return PTR_ERR(dir);
++	p = kmalloc(PATH_MAX, GFP_KERNEL);
++	if (!p) {
++		kfree(dir);
++		return -ENOMEM;
++	}
++
++	old_fs = get_fs();
++	set_fs(KERNEL_DS);
++	if (!strcmp(type, "sharefs")) {
++		ret = do_mount(dev, (const char __user *)dir, NULL, MS_BIND, NULL);
++		goto out;
++	}
++
++	{
++		/* do_mount() NUL-terminates data at PAGE_SIZE-1: needs a full page */
++		char *opts = (char *)get_zeroed_page(GFP_KERNEL);
++
++		if (!opts) {
++			ret = -ENOMEM;
++			goto out;
++		}
++		strlcpy(opts, "mode=0711", PAGE_SIZE);
++		ret = do_mount("hmdfs", (const char __user *)dir, "tmpfs",
++			       flags & (MS_NOSUID | MS_NODEV | MS_NOEXEC), opts);
++		free_page((unsigned long)opts);
++	}
++	if (ret)
++		goto out;
++	snprintf(p, PATH_MAX, "%s/device_view", dir);
++	sys_mkdirat(AT_FDCWD, (const char __user *)p, 0711);
++	for (i = 0; i < ARRAY_SIZE(views); i++) {
++		snprintf(p, PATH_MAX, "%s/%s", dir, views[i]);
++		sys_mkdirat(AT_FDCWD, (const char __user *)p, 0711);
++		ret = do_mount(dev, (const char __user *)p, NULL, MS_BIND, NULL);
++		if (ret) {
++			pr_warn("ohos_fs_emu: bind %s -> %s failed %ld\n", dev, p, ret);
++			break;
++		}
++	}
++out:
++	set_fs(old_fs);
++	if (ret)
++		pr_warn("ohos_fs_emu: %s %s -> %s failed %ld\n", type, dev, dir, ret);
++	kfree(p);
++	kfree(dir);
++	return ret;
++}
++#endif
++
+ SYSCALL_DEFINE5(mount, char __user *, dev_name, char __user *, dir_name,
+ 		char __user *, type, unsigned long, flags, void __user *, data)
+ {
+@@ -3676,6 +3748,12 @@ SYSCALL_DEFINE5(mount, char __user *, dev_name, char __user *, dir_name,
+ 	if (IS_ERR(options))
+ 		goto out_data;
+ 
++#ifdef CONFIG_OHOS_FS_EMU
++	if (kernel_type && kernel_dev && !(flags & (MS_REMOUNT | MS_BIND)) &&
++	    (!strcmp(kernel_type, "hmdfs") || !strcmp(kernel_type, "sharefs")))
++		ret = ohos_fs_emu_mount(kernel_dev, dir_name, kernel_type, flags);
++	else
++#endif
+ 	ret = do_mount(kernel_dev, dir_name, kernel_type, flags, options);
+ 
+ 	kfree(options);
+diff --git a/include/linux/memcontrol.h b/include/linux/memcontrol.h
+index fd77f8303..ed5ca590f 100644
+--- a/include/linux/memcontrol.h
++++ b/include/linux/memcontrol.h
+@@ -170,9 +170,15 @@ enum memcg_kmem_state {
+  * statistics based on the statistics developed by Rik Van Riel for clock-pro,
+  * to help the administrator determine what knobs to tune.
+  */
++#define HMOS_MEMCG_NVALS 24
+ struct mem_cgroup {
+ 	struct cgroup_subsys_state css;
+ 
++	/* HarmonyOS memmgr knobs (hyperhold/zswapd memcg files): accepted and
++	 * remembered so that memmgrservice can start, no reclaim behind them */
++	char hmos_name[64];
++	u64 hmos_vals[HMOS_MEMCG_NVALS];
++
+ 	/* Private memcg ID. Used to ID objects that outlive the cgroup */
+ 	struct mem_cgroup_id id;
+ 
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index 626ecbcf6..473058882 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -2238,6 +2238,10 @@ struct task_struct {
+ 	/* A live task holds one reference. */
+ 	atomic_t stack_refcount;
+ #endif
++#ifdef CONFIG_ACCESS_TOKENID
++	u64				token;
++	u64				ftoken;
++#endif
+ /* CPU-specific state of this task */
+ 	struct thread_struct thread;
+ /*
+diff --git a/include/uapi/linux/android/binder.h b/include/uapi/linux/android/binder.h
+index 2bf6a1f76..a2c496c50 100644
+--- a/include/uapi/linux/android/binder.h
++++ b/include/uapi/linux/android/binder.h
+@@ -297,6 +297,26 @@ struct binder_frozen_status_info {
+ #define BINDER_GET_FROZEN_INFO		_IOWR('b', 15, struct binder_frozen_status_info)
+ #define BINDER_ENABLE_ONEWAY_SPAM_DETECTION	_IOW('b', 16, __u32)
+ 
++/* OpenHarmony binder extensions */
++struct binder_feature_set {
++	__u64 feature_set;
++};
++
++struct access_token {
++	__u64 sender_tokenid;
++	__u64 first_tokenid;
++	__u64 reserved[2];
++};
++
++struct binder_sender_info {
++	struct access_token tokens;
++	__u64 sender_pid_nr;
++};
++
++#define BINDER_FEATURE_SET	_IOWR('b', 30, struct binder_feature_set)
++#define BINDER_GET_ACCESS_TOKEN	_IOWR('b', 31, struct access_token)
++#define BINDER_GET_SENDER_INFO	_IOWR('b', 32, struct binder_sender_info)
++
+ /*
+  * NOTE: Two special error codes you should check for when calling
+  * in to the driver are:
+diff --git a/kernel/fork.c b/kernel/fork.c
+index 2be3df946..2b114ddeb 100644
+--- a/kernel/fork.c
++++ b/kernel/fork.c
+@@ -555,6 +555,10 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
+ 	tsk->task_frag.page = NULL;
+ 	tsk->wake_q.next = NULL;
+ 
++#ifdef CONFIG_ACCESS_TOKENID
++	tsk->token = orig->token;
++	tsk->ftoken = 0;
++#endif
+ 	account_kernel_stack(tsk, 1);
+ 
+ 	kcov_task_init(tsk);
+diff --git a/kernel/reboot.c b/kernel/reboot.c
+index 366c3ce60..cf1a2e000 100644
+--- a/kernel/reboot.c
++++ b/kernel/reboot.c
+@@ -295,6 +295,22 @@ static DEFINE_MUTEX(reboot_mutex);
+ extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);
+ #endif
+ 
++#ifdef CONFIG_OHOS_BRINGUP_NOREBOOT
++/*
++ * HarmonyOS init reboots with reason "panic" when a "critical" service
++ * keeps crashing. During hardware bring-up that turns every missing driver
++ * into a reboot loop; with hmos.noreboot=1 on the command line the request
++ * is refused and logged so the system stays up for debugging.
++ */
++bool hmos_noreboot;
++static int __init hmos_noreboot_setup(char *str)
++{
++	hmos_noreboot = (str && *str == '1');
++	return 1;
++}
++__setup("hmos.noreboot=", hmos_noreboot_setup);
++#endif
++
+ SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
+ 		void __user *, arg)
+ {
+@@ -355,6 +371,7 @@ SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
+ 		panic("cannot halt");
+ 
+ 	case LINUX_REBOOT_CMD_POWER_OFF:
++		pr_emerg("hmos: power off requested by %s[%d]\n", current->comm, task_pid_nr(current));
+ 		kernel_power_off();
+ 		do_exit(0);
+ 		break;
+@@ -367,6 +384,21 @@ SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
+ 		}
+ 		buffer[sizeof(buffer) - 1] = '\0';
+ 
++#ifdef CONFIG_OHOS_BRINGUP_NOREBOOT
++		if (hmos_noreboot && strstr(buffer, "panic")) {
++			pr_emerg("hmos: refusing reboot(\"panic\") from %s[%d] (hmos.noreboot=1)\n",
++				 current->comm, task_pid_nr(current));
++			ret = -EPERM;
++			break;
++		}
++#endif
++		pr_emerg("hmos: reboot(\"%s\") requested by %s[%d]\n", buffer, current->comm,
++			 task_pid_nr(current));
++		/* HarmonyOS asks for "shutdown"/"poweroff" through RESTART2 on some paths */
++		if (!strncmp(buffer, "shutdown", 8) || !strncmp(buffer, "poweroff", 8)) {
++			kernel_power_off();
++			do_exit(0);
++		}
+ 		kernel_restart(buffer);
+ 		break;
+ 
+diff --git a/mm/memcontrol.c b/mm/memcontrol.c
+index abdd774a8..4f8b234a5 100644
+--- a/mm/memcontrol.c
++++ b/mm/memcontrol.c
+@@ -3981,6 +3981,97 @@ static ssize_t memcg_write_event_control(struct kernfs_open_file *of,
+ 	return ret;
+ }
+ 
++/*
++ * HarmonyOS memmgrservice configures the hyperhold/zswapd extensions of the
++ * OpenHarmony kernel through extra memcg files (memory.name,
++ * memory.app_score, memory.zswapd_*, ...). When a write fails its init
++ * fails, it never publishes SA 1909, and every client (SceneBoard on each
++ * window occlusion change) then blocks ~1.2 s waiting for it. Provide the
++ * files: values are stored and read back, nothing acts on them.
++ */
++static int hmos_memcg_name_show(struct seq_file *m, void *v)
++{
++	struct mem_cgroup *memcg = mem_cgroup_from_css(seq_css(m));
++
++	seq_printf(m, "%s\n", memcg->hmos_name);
++	return 0;
++}
++
++static ssize_t hmos_memcg_name_write(struct kernfs_open_file *of, char *buf,
++				     size_t nbytes, loff_t off)
++{
++	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
++
++	strlcpy(memcg->hmos_name, strstrip(buf), sizeof(memcg->hmos_name));
++	return nbytes;
++}
++
++static int hmos_memcg_val_show(struct seq_file *m, void *v)
++{
++	struct mem_cgroup *memcg = mem_cgroup_from_css(seq_css(m));
++	unsigned int i = seq_cft(m)->private;
++
++	seq_printf(m, "%llu\n", i < HMOS_MEMCG_NVALS ? memcg->hmos_vals[i] : 0);
++	return 0;
++}
++
++static ssize_t hmos_memcg_val_write(struct kernfs_open_file *of, char *buf,
++				    size_t nbytes, loff_t off)
++{
++	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
++	unsigned int i = of_cft(of)->private;
++	unsigned long long v = 0;
++
++	/* multi-value params ("0 0 50") keep their first number */
++	if (sscanf(strstrip(buf), "%llu", &v) < 1)
++		v = 0;
++	if (i < HMOS_MEMCG_NVALS)
++		memcg->hmos_vals[i] = v;
++	return nbytes;
++}
++
++static int hmos_memcg_info_show(struct seq_file *m, void *v)
++{
++	struct mem_cgroup *memcg = mem_cgroup_from_css(seq_css(m));
++
++	seq_printf(m, "memcg score: %llu\nmemcg ub_mem2zram_ratio: %llu\n"
++		   "memcg ub_zram2ufs_ratio: %llu\nmemcg refault_threshold: %llu\n",
++		   memcg->hmos_vals[0], memcg->hmos_vals[1], memcg->hmos_vals[2],
++		   memcg->hmos_vals[3]);
++	return 0;
++}
++
++#define HMOS_MEMCG_VAL(n, idx) { .name = n, .private = idx, \
++	.seq_show = hmos_memcg_val_show, .write = hmos_memcg_val_write }
++
++static struct cftype hmos_memcg_files[] = {
++	{ .name = "name", .seq_show = hmos_memcg_name_show, .write = hmos_memcg_name_write },
++	HMOS_MEMCG_VAL("app_score", 0),
++	HMOS_MEMCG_VAL("ub_ufs2zram_ratio", 4),
++	HMOS_MEMCG_VAL("force_swapin", 5),
++	HMOS_MEMCG_VAL("force_swapout", 6),
++	HMOS_MEMCG_VAL("force_shrink_all", 7),
++	HMOS_MEMCG_VAL("force_shrink_anon", 8),
++	HMOS_MEMCG_VAL("force_shrink_purgeable_bysize", 9),
++	HMOS_MEMCG_VAL("force_soft_limit_reclaim", 10),
++	HMOS_MEMCG_VAL("gpu_reclaimed", 11),
++	HMOS_MEMCG_VAL("soft_limit_param", 12),
++	HMOS_MEMCG_VAL("swap_full_ratio", 13),
++	HMOS_MEMCG_VAL("zram_wm_ratio", 14),
++	HMOS_MEMCG_VAL("zswapd_memcgs_param", 15),
++	HMOS_MEMCG_VAL("avail_buffers", 16),
++	HMOS_MEMCG_VAL("zswapd_pressure", 17),
++	HMOS_MEMCG_VAL("zswapd_presure_show", 18),
++	HMOS_MEMCG_VAL("psi_health_info", 19),
++	HMOS_MEMCG_VAL("eswap_info", 20),
++	HMOS_MEMCG_VAL("space_info", 21),
++	HMOS_MEMCG_VAL("total_info_per_app", 22),
++	HMOS_MEMCG_VAL("zswapd_max_reclaim_size", 23),
++	{ .name = "zswapd_single_memcg_param", .seq_show = hmos_memcg_info_show,
++	  .write = hmos_memcg_val_write, .private = 1 },
++	{ }	/* terminate */
++};
++
+ static struct cftype mem_cgroup_legacy_files[] = {
+ 	{
+ 		.name = "usage_in_bytes",
+@@ -5872,6 +5963,9 @@ static int __init mem_cgroup_init(void)
+ {
+ 	int cpu, node;
+ 
++	if (!mem_cgroup_disabled())
++		WARN_ON(cgroup_add_legacy_cftypes(&memory_cgrp_subsys, hmos_memcg_files));
++
+ #ifndef CONFIG_SLOB
+ 	/*
+ 	 * Kmem cache creation is mostly done with the slab_mutex held,
+diff --git a/security/selinux/selinuxfs.c b/security/selinux/selinuxfs.c
+index 0fa0616c5..9f2f35941 100644
+--- a/security/selinux/selinuxfs.c
++++ b/security/selinux/selinuxfs.c
+@@ -140,6 +140,18 @@ static ssize_t sel_read_enforce(struct file *filp, char __user *buf,
+ }
+ 
+ #ifdef CONFIG_SECURITY_SELINUX_DEVELOP
++#ifdef CONFIG_OHOS_BRINGUP_PERMISSIVE
++/* hmos.permissive=1: keep SELinux permissive while the HarmonyOS userspace is
++ * brought up on hardware its policy does not describe. */
++static bool hmos_force_permissive;
++static int __init hmos_permissive_setup(char *str)
++{
++	hmos_force_permissive = (str && *str == '1');
++	return 1;
++}
++__setup("hmos.permissive=", hmos_permissive_setup);
++#endif
++
+ static ssize_t sel_write_enforce(struct file *file, const char __user *buf,
+ 				 size_t count, loff_t *ppos)
+ 
+@@ -184,6 +196,13 @@ static ssize_t sel_write_enforce(struct file *file, const char __user *buf,
+ #ifdef CONFIG_ALWAYS_PERMISSIVE
+     new_value = 0;
+ #endif
++#ifdef CONFIG_OHOS_BRINGUP_PERMISSIVE
++	if (hmos_force_permissive && new_value) {
++		pr_warn("hmos: ignoring setenforce 1 from %s (hmos.permissive=1)\n",
++			current->comm);
++		new_value = 0;
++	}
++#endif
+ 
+ 	if (new_value != selinux_enforcing) {
+ 		length = task_has_security(current, SECURITY__SETENFORCE);
+-- 
+2.43.0
+

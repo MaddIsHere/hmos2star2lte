@@ -1,0 +1,50 @@
+{
+  "name": "Display: Samsung DECON composer + ION buffer allocator",
+  "default": true,
+  "description": "Replaces Huawei's Kirin display HALs with a composer that presents the client target through the Samsung DECON window-config ioctl on /dev/graphics/fb0 (the S9+ kernel has no DRM/KMS), and a dma-buf allocator on Samsung ION. Without it the panel is switched off when composer_host closes fb0. Build the two libraries with build/build_ohos.sh. It also sets persist.sys.graphic.GpuApitype to 0 (OpenGL): the OTA default 1 (Vulkan) makes render_service call a null Vulkan function pointer at its first frame (the Huawei Vulkan ICD cannot create a device on a Mali-G72) and crash-loop.",
+  "vendor_files": [
+    {
+      "src": "files/lib64/libdisplay_composer_vdi_impl.z.so",
+      "dst": "lib64/libdisplay_composer_vdi_impl.z.so",
+      "mode": "0644"
+    },
+    {
+      "src": "files/lib64/libdisplay_buffer_vdi_impl.z.so",
+      "dst": "lib64/libdisplay_buffer_vdi_impl.z.so",
+      "mode": "0644"
+    },
+    {
+      "src": "files/etc/param/star2lte_graphic.para",
+      "dst": "etc/param/star2lte_graphic.para",
+      "mode": "0644"
+    }
+  ],
+  "ueventd": [
+    "/dev/kmsg 0666 0 0",
+    "/dev/ion 0666 0 1003",
+    "/dev/graphics/fb0 0666 0 1003"
+  ],
+  "init": {
+    "jobs": [
+      {
+        "name": "pre-init",
+        "cmds": [
+          "setparam persist.sys.graphic.GpuApitype 0"
+        ]
+      },
+      {
+        "name": "post-fs-data",
+        "cmds": [
+          "mkdir /data/local/tmp 0777 root root",
+          "chmod 0777 /data/local/tmp",
+          "chmod 0666 /dev/kmsg",
+          "chmod 0666 /dev/ion",
+          "chmod 0666 /dev/graphics/fb0",
+          "chown system system /sys/class/backlight/panel/brightness",
+          "chmod 0666 /sys/class/backlight/panel/brightness"
+        ]
+      }
+    ]
+  },
+  "requires": []
+}

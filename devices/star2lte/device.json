@@ -1,0 +1,36 @@
+{
+  "name": "star2lte",
+  "title": "Samsung Galaxy S9+ (SM-G965, Exynos 9810)",
+  "hardware": "samsungexynos9810",
+  "_note": "Partition names verified from TWRP by-name listing (UFS, sda): BOOT=sda10, SYSTEM=sda18, CACHE=sda22, USERDATA=sda29, DTB=sda8, DTBO=sda9. No super partition.",
+  "storage": {
+    "mode": "loop",
+    "fs": "ext4",
+    "host_partition": "SYSTEM",
+    "host_fs": "ext4",
+    "dir": "hmosimg",
+    "headroom_pct": 8,
+    "slack_mb": 64
+  },
+  "partitions": {
+    "boot": "BOOT",
+    "userdata": {
+      "name": "USERDATA",
+      "fs": "ext4",
+      "_note": "Samsung formats /data as ext4, and a recovery wipe does the same: the fstab line has to match or /data is never mounted (HarmonyOS then runs without /data/log, /data/app, ...). Set this to f2fs only if you really format USERDATA as f2fs."
+    },
+    "cache": {
+      "name": "CACHE",
+      "fs": "ext4",
+      "mount": "/log",
+      "_note": "12 MB raw on this phone (7.6 MB as ext4): hmos-preinit keeps only the newest boot logs there."
+    }
+  },
+  "boot": {
+    "template": "stock",
+    "samsung_trailer": true
+  },
+  "_note_by_name": "HarmonyOS ueventd only creates /dev/block/by-name/* when default_boot_device from /proc/cmdline matches the controller, and Samsung's bootloader filters our command line (the parameter never reaches /proc/cmdline). The per-controller by-name directory is created unconditionally, so the second-stage fstab points there.",
+  "by_name_dir": "/dev/block/platform/11120000.ufs/by-name",
+  "cmdline_extra": "buildvariant=user enforcing=0 hmos.permissive=1 hmos.noreboot=1 printk.devkmsg=on audit=0 firmware_class.path=/vendor/firmware"
+}

@@ -1,0 +1,20 @@
+{
+  "name": "Core: preinit, fstab, access_token",
+  "required": true,
+  "default": true,
+  "description": "Core for every device: hmos-preinit as /init (maps the HarmonyOS partitions, kernel log to the cache partition), the second-stage fstab written from devices/<name>/device.json, access_token_id permissions. The device kernel and boot.img are passed on the command line. Always installed.",
+  "init": {
+    "jobs": [
+      {
+        "name": "post-fs-data",
+        "cmds": [
+          "mkdir /data/vendor 0771 root root",
+          "mkdir /data/vendor/tmp 0770 root root",
+          "chown access_token access_token /dev/access_token_id",
+          "chmod 0666 /dev/access_token_id"
+        ]
+      }
+    ]
+  },
+  "requires": []
+}

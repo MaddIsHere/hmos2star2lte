@@ -1,0 +1,60 @@
+{
+  "name": "GPU: Mesa software rendering (softpipe) for OpenGL ES",
+  "default": true,
+  "requires": [
+    "10-display-decon"
+  ],
+  "description": "Mesa 26 softpipe as the system EGL/GLES driver (the S9+ Mali blobs are bionic and unusable). Frames are rendered on the CPU and copied into the window dma-buf. The Huawei Vulkan ICD is removed so render_service stays on GLES. Build with build/build_mesa.sh.",
+  "vendor_files": [
+    {
+      "src": "files/lib64/chipsetsdk/libEGL_impl.so",
+      "dst": "lib64/chipsetsdk/libEGL_impl.so",
+      "mode": "0644",
+      "replace_symlink": true
+    },
+    {
+      "src": "files/lib64/chipsetsdk/libGLESv1_impl.so",
+      "dst": "lib64/chipsetsdk/libGLESv1_impl.so",
+      "mode": "0644",
+      "replace_symlink": true
+    },
+    {
+      "src": "files/lib64/chipsetsdk/libGLESv2_impl.so",
+      "dst": "lib64/chipsetsdk/libGLESv2_impl.so",
+      "mode": "0644",
+      "replace_symlink": true
+    },
+    {
+      "src": "files/lib64/chipsetsdk/libGLESv3_impl.so",
+      "dst": "lib64/chipsetsdk/libGLESv3_impl.so",
+      "mode": "0644",
+      "replace_symlink": true
+    },
+    {
+      "src": "files/lib64/chipsetsdk/libgallium-26.1.0-devel.so",
+      "dst": "lib64/chipsetsdk/libgallium-26.1.0-devel.so",
+      "mode": "0644"
+    },
+    {
+      "src": "files/lib64/chipsetsdk/libexpat.so.1",
+      "dst": "lib64/chipsetsdk/libexpat.so.1",
+      "mode": "0644"
+    }
+  ],
+  "vendor_remove": [
+    "etc/vulkan/icd.d/vulkan_driver_v200.json"
+  ],
+  "ueventd": [
+    "/dev/ion 0666 0 1003"
+  ],
+  "init": {
+    "jobs": [
+      {
+        "name": "post-fs-data",
+        "cmds": [
+          "chmod 0666 /dev/ion"
+        ]
+      }
+    ]
+  }
+}

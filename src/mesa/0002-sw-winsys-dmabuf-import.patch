@@ -1,0 +1,20 @@
+--- a/src/gallium/winsys/sw/dri/dri_sw_winsys.c	2026-11-16 17:21:25.578863655 +0700
++++ b/src/gallium/winsys/sw/dri/dri_sw_winsys.c	2026-11-16 17:21:31.189720430 +0700
+@@ -322,6 +322,17 @@
+    struct dri_sw_displaytarget *dri_sw_dt = dri_sw_displaytarget(sw);
+    dri_sw_dt->fd = fd;
+    dri_sw_dt->offset = whandle->offset;
++   /* The dma-buf is the backing store: drop the scratch allocation made by
++    * displaytarget_create() (it was leaked on every import) and honour the
++    * exporter's pitch (HarmonyOS gralloc aligns the width, not the bytes). */
++   if (dri_sw_dt->shmid < 0 && dri_sw_dt->data) {
++      align_free(dri_sw_dt->data);
++      dri_sw_dt->data = NULL;
++   }
++   if (whandle->stride) {
++      dri_sw_dt->stride = whandle->stride;
++      *stride = whandle->stride;
++   }
+    return sw;
+ #else
+    assert(0);
