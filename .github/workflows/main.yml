@@ -1,0 +1,95 @@
+name: Build Mesa llvmpipe for HarmonyOS (star2lte)
+
+# Cross-builds LLVM (AArch64, static) and Mesa 26.1 with llvmpipe for aarch64-linux-ohos.
+# Result: artifact "mesa-llvmpipe" with the files for patches/11-gpu-mesa/files/lib64/chipsetsdk.
+#
+# Needed once, in the repo:
+#   * build/sysroot-stubs.tar.xz   (made locally with build/make_stub_sysroot.sh: symbol names only, no Huawei code)
+#   * secrets GITEE_USER and GITEE_TOKEN (Settings > Secrets and variables > Actions), used to clone the
+#     OpenHarmony sources from gitee. Secrets, not run inputs: inputs are shown in the public run page.
+on:
+  workflow_dispatch:
+    inputs:
+      mesa_repo:
+        description: Mesa git repository
+        default: https://gitlab.freedesktop.org/mesa/mesa.git
+      mesa_date:
+        description: Mesa snapshot date (last commit on main before this day); the patches were made on a 2026-09-28 snapshot
+        default: "2026-09-28"
+      llvm_version:
+        description: LLVM version
+        default: "19.1.7"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    env:
+      WORK: /mnt/work
+      LLVM_VER: ${{ inputs.llvm_version }}
+      LLVM_PREFIX: /mnt/work/llvm-ohos
+      SYSROOT: /mnt/work/sysroot
+      MESA_SRC: /mnt/work/mesa
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld llvm cmake ninja-build python3-mako python3-yaml python3-pip \
+            glslang-tools bison flex pkg-config xz-utils curl patch libexpat1-dev
+          pip install --break-system-packages 'meson>=1.4'
+          sudo mkdir -p /mnt/work && sudo chown "$USER" /mnt/work
+          df -h /mnt
+
+      - name: Sysroot (open-source base + symbol stubs)
+        run: |
+          test -f build/sysroot-stubs.tar.xz || { echo "build/sysroot-stubs.tar.xz is missing: run build/make_stub_sysroot.sh locally and commit it"; exit 1; }
+          mkdir -p "$SYSROOT"
+          tar -xJf build/sysroot-base.tar.xz -C "$SYSROOT"
+          tar -xJf build/sysroot-stubs.tar.xz -C "$SYSROOT"
+          ls "$SYSROOT/usr/lib" | head -40
+
+      - name: OpenHarmony sources (gitee)
+        env:
+          GU: ${{ secrets.GITEE_USER }}
+          GT: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          echo "::add-mask::$GT"
+          git config --global url."https://$GU:$GT@gitee.com/".insteadOf "https://gitee.com/"
+          bash build/fetch_oh_sources.sh
+          git config --global --unset-all url."https://$GU:$GT@gitee.com/".insteadOf || true
+
+      - name: Mesa source
+        run: |
+          git clone "${{ inputs.mesa_repo }}" "$MESA_SRC"
+          cd "$MESA_SRC"
+          git checkout "$(git rev-list -1 --before='${{ inputs.mesa_date }} 23:59' HEAD)"
+          git log -1 --format='Mesa at %h %cd'
+
+      - name: LLVM cache
+        id: llvmcache
+        uses: actions/cache@v4
+        with:
+          path: |
+            /mnt/work/llvm-ohos
+            /mnt/work/llvm-native/bin
+          key: llvm-ohos-${{ inputs.llvm_version }}-${{ hashFiles('build/build_llvm.sh', 'build/ohos-clang', 'build/sysroot-stubs.tar.xz') }}
+
+      - name: Build LLVM (about 1-2 h the first time)
+        if: steps.llvmcache.outputs.cache-hit != 'true'
+        run: bash build/build_llvm.sh
+
+      - name: Build Mesa with llvmpipe
+        run: |
+          [ -x "$LLVM_PREFIX/bin/llvm-config-host" ] || { echo "LLVM prefix incomplete (cache?)"; exit 1; }
+          bash build/build_mesa.sh
+
+      - name: Mesa build log on failure
+        if: failure()
+        run: tail -n 120 /mnt/work/mesa-build/b/meson-logs/meson-log.txt || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mesa-llvmpipe
+          path: patches/11-gpu-mesa/files/lib64/chipsetsdk/
