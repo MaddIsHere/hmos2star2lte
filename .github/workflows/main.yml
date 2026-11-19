@@ -35,8 +35,9 @@ jobs:
 
       - name: Tools
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang lld llvm cmake ninja-build python3-mako python3-yaml python3-pip \
+          sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
+          sudo apt-get -o Acquire::Retries=5 update
+          sudo apt-get -o Acquire::Retries=5 install -y clang lld llvm cmake ninja-build python3-mako python3-yaml python3-pip \
             glslang-tools bison flex pkg-config xz-utils curl patch libexpat1-dev
           pip install --break-system-packages 'meson>=1.4'
           sudo mkdir -p /mnt/work && sudo chown "$USER" /mnt/work
