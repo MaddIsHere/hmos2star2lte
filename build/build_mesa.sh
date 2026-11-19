@@ -87,6 +87,13 @@ if [ -n "${LLVM_PREFIX:-}" ] && [ -x "$LLVM_PREFIX/bin/llvm-config-host" ]; then
   GALLIUM=llvmpipe,softpipe; LLVMOPT=enabled
   sed -i "s#^pkg-config = .*#&\nllvm-config = '$LLVM_PREFIX/bin/llvm-config-host'#" "$M/cross.ini"
   EXTRA=(-Dshared-llvm=disabled -Dcpp_rtti=false)
+  # meson did not put the LLVM archives on the libgallium link line: pass them explicitly (cpp_link_args sit inside the
+  # --start-group of the link, so the order does not matter)
+  LLVMLIBS=$("$LLVM_PREFIX/bin/llvm-config-host" --link-static --libfiles bitwriter core engine executionengine instcombine \
+      mcdisassembler mcjit native scalaropts transformutils coroutines lto irreader ipo vectorize | tr ' ' '\n' | grep . | sed "s/.*/'&'/" | paste -sd, -)
+  [ -n "$LLVMLIBS" ] || { echo "ERROR: llvm-config returned no libraries"; exit 1; }
+  sed -i "s#^cpp_link_args = \[#cpp_link_args = [$LLVMLIBS, #" "$M/cross.ini"
+  echo "LLVM archives added to cpp_link_args: $(echo "$LLVMLIBS" | tr ',' '\n' | wc -l)"
 fi
 rm -rf "$M/b"
 meson setup "$M/b" --force-fallback-for=zlib -Dzlib:default_library=static --cross-file "$M/cross.ini" --buildtype=release \
