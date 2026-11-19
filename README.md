@@ -2,8 +2,7 @@
 
 HarmonyOS 5 (OpenHarmony) userspace from a Huawei Pura 70 OTA, repackaged for the **Samsung Galaxy S9+ (star2lte,
 Exynos 9810)**. Fork of [tsryzenstech/hmos2sweet](https://github.com/tsryzenstech/hmos2sweet) (Apache-2.0, see
-NOTICE.md), which targets the Redmi Note 10 Pro (Snapdragon). Work in progress: **nothing here has been booted
-on a phone yet.**
+NOTICE.md), which targets the Redmi Note 10 Pro (Snapdragon). Work in progress
 
 What changed compared to hmos2sweet:
 
