@@ -21,14 +21,14 @@ See [docs/PORTING_STATUS.md](docs/PORTING_STATUS.md) for what works and what has
 ## Status
 | Feature | Status |
 | --- | --- |
-| Boot, boot animation, SceneBoard, launcher, setup wizard | Works |
-| Display, touch | Works |
-| Volume Up/Down/Power | Works |
-| GPU | No |
-| Everything else | No |
+| Boot, boot animation, SceneBoard, launcher, setup wizard | ✅ Works |
+| Display, touch | ✅ Works |
+| Volume Up/Down/Power | ✅ Works |
+| GPU | ❌ No |
+| Everything else | ❌ No |
 
 
-## Use
+## Building
 
 ```
 tools/fetch_tools.sh                  # erofs tools (reads the OTA)
@@ -40,7 +40,39 @@ Needs Linux/WSL with Python 3.8+, `e2fsprogs` >= 1.43 (`mke2fs -d`, `debugfs`, `
 Before the first run, check the partition names in `devices/star2lte/device.json` against
 `ls -l /dev/block/by-name` in TWRP.
 
-The `SYSTEM` partition on the phone MUST be over 13GB
-
 Output: `system.img`, `vendor.img`, ... as ext4, `boot.img`, `install_clean.sh`, `update_keep_data.sh`,
 `get_logs.sh`. Boot logs are kept on the CACHE partition by hmos-preinit; `get_logs.sh` pulls them from recovery.
+
+## Flashing
+
+!! The `SYSTEM` partition on the phone MUST be at least 13GB. !!                                                                                        
+!! RUN IN ORDER !!
+Replace "/path/to/...img" with your path!
+```
+adb shell "mkdir -p /mnt/hmos && mount -t ext4 /dev/block/by-name/SYSTEM /mnt/hmos && mkdir -p /mnt/hmos/hmosimg"
+adb push /path/to/system.img /mnt/hmos/hmosimg
+adb push /path/to/vendor.img /mnt/hmos/hmosimg
+adb push /path/to/chip_prod.img /mnt/hmos/hmosimg
+adb push /path/to/sys_prod.img /mnt/hmos/hmosimg
+adb push /path/to/cust.img /mnt/hmos/hmosimg
+adb push /path/to/patch.img /mnt/hmos/hmosimg
+adb shell "sync; umount /mnt/hmos"
+adb push path/to/boot.img /tmp/boot.img
+adb shell "dd if=/tmp/boot.img of=/dev/block/by-name/BOOT bs=4096 && sync"
+adb shell reboot
+```
+
+## Getting logs
+
+Make sure to create hmos-logs folder first.                                                                                                                            
+You can change the path! not restricted to just C:\
+
+```
+mkdir C:\hmos-logs
+adb shell "mkdir -p /tmp/c && mount -t ext4 /dev/block/by-name/CACHE /tmp/c"
+adb pull /tmp/c/hmos C:\hmos-logs\cache
+adb pull /sys/fs/pstore C:\hmos-logs\pstore
+adb shell "dmesg" > C:\hmos-logs\recovery_dmesg.txt
+adb pull /data/log/faultlog "C:\hmos-logs\faultlog"
+adb pull /data/log/hilog "C:\hmos-logs\hilog"
+```
