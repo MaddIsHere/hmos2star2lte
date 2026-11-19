@@ -23,6 +23,16 @@ def sub(path, fn):
     if n != s: open(path, 'w').write(n)
 # 'ohos' as an allowed value of -Dplatforms
 sub('meson.options', lambda s: s if "'ohos'" in s else re.sub(r"('macos',?)(\s*\])", r"'macos', 'ohos'\2", s, count=1) if re.search(r"'macos',?\s*\]", s) else s.replace("'macos',", "'macos', 'ohos',", 1))
+# 'ohos' as an allowed value of -Degl-native-platform
+def eglplat(s):
+    i = s.find("'egl-native-platform'")
+    if i < 0: return s
+    j = s.find(")", i)
+    blk = s[i:j]
+    if "'ohos'" in blk: return s
+    blk2 = blk.replace("'surfaceless'", "'surfaceless', 'ohos'", 1) if "'surfaceless'" in blk else blk.replace("'android'", "'android', 'ohos'", 1)
+    return s[:i] + blk2 + s[j:]
+sub('meson.options', eglplat)
 # EGL_PLATFORM_OHOS_KHR fallback
 sub('src/egl/main/eglapi.c', lambda s: s if 'define EGL_PLATFORM_OHOS_KHR' in s else
     s.replace('#include', '#ifndef EGL_PLATFORM_OHOS_KHR\n#define EGL_PLATFORM_OHOS_KHR 0x34E0\n#endif\n#include', 1))
