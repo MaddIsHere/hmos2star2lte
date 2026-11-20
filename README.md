@@ -24,6 +24,7 @@ See [docs/PORTING_STATUS.md](docs/PORTING_STATUS.md) for what works and what has
 | Boot, boot animation, SceneBoard, launcher, setup wizard | ✅ Works |
 | Display, touch | ✅ Works |
 | Volume Up/Down/Power | ✅ Works |
+| Boot on S9 & N9 | ⚠️ Probably |
 | GPU | ❌ No |
 | Everything else | ❌ No |
 
