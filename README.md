@@ -82,3 +82,7 @@ adb pull /data/log/hilog "C:\hmos-logs\hilog"
 
 LINUX:
 `get_logs.sh`. Boot logs are kept on the CACHE partition by hmos-preinit; `get_logs.sh` pulls them from recovery.
+
+## Credits:
+tsryzenstech                                                                                                                                                                                                                                          
+duhansysl
