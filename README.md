@@ -41,7 +41,6 @@ Before the first run, check the partition names in `devices/star2lte/device.json
 `ls -l /dev/block/by-name` in TWRP.
 
 Output: `system.img`, `vendor.img`, ... as ext4, `boot.img`, `install_clean.sh`, `update_keep_data.sh`,
-`get_logs.sh`. Boot logs are kept on the CACHE partition by hmos-preinit; `get_logs.sh` pulls them from recovery.
 
 ## Flashing
 
@@ -65,6 +64,8 @@ adb shell reboot
 ## Getting logs
 
 Make sure to create hmos-logs folder first.                                                                                                                            
+
+WINDOWS:
 You can change the path! not restricted to just C:\
 
 ```
@@ -76,3 +77,6 @@ adb shell "dmesg" > C:\hmos-logs\recovery_dmesg.txt
 adb pull /data/log/faultlog "C:\hmos-logs\faultlog"
 adb pull /data/log/hilog "C:\hmos-logs\hilog"
 ```
+
+LINUX:
+`get_logs.sh`. Boot logs are kept on the CACHE partition by hmos-preinit; `get_logs.sh` pulls them from recovery.
