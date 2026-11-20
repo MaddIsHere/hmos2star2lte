@@ -35,6 +35,8 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
+#include <time.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -99,8 +101,74 @@ ohos_clamp8(int v)
    return v < 0 ? 0 : (v > 255 ? 255 : v);
 }
 
+/* The converted frames go into memfds.  Making a new 13 MB memfd for every imported frame leaked all of them
+ * (render_service reached 3.6 GB and was OOM-killed), so a small ring of memfds per frame size is reused instead:
+ * the frame is converted again on every import anyway, and RenderService draws it right after importing it. */
+#define OHOS_YUV_RING 6
+#define OHOS_YUV_SIZES 8
+static struct {
+   size_t outsz;
+   int fds[OHOS_YUV_RING];
+   unsigned next;
+} ohos_yuv_pool[OHOS_YUV_SIZES];
+static pthread_mutex_t ohos_yuv_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* returns a pooled memfd of outsz bytes (owned by the pool: do not close), or -1 */
 static int
-ohos_yuv_to_rgba_memfd(const BufferHandle *h, int *out_stride)
+ohos_yuv_pool_fd(size_t outsz)
+{
+   int fd = -1;
+   pthread_mutex_lock(&ohos_yuv_lock);
+   for (int i = 0; i < OHOS_YUV_SIZES; i++) {
+      if (ohos_yuv_pool[i].outsz == 0) {
+         ohos_yuv_pool[i].outsz = outsz;
+         for (int k = 0; k < OHOS_YUV_RING; k++)
+            ohos_yuv_pool[i].fds[k] = -1;
+      }
+      if (ohos_yuv_pool[i].outsz != outsz)
+         continue;
+      int *slot = &ohos_yuv_pool[i].fds[ohos_yuv_pool[i].next++ % OHOS_YUV_RING];
+      if (*slot < 0) {
+         int m = memfd_create("ohos-yuv", MFD_CLOEXEC);
+         if (m >= 0 && ftruncate(m, outsz) != 0) {
+            close(m);
+            m = -1;
+         }
+         *slot = m;
+      }
+      fd = *slot;
+      break;
+   }
+   pthread_mutex_unlock(&ohos_yuv_lock);
+   return fd;
+}
+
+static long long
+ohos_now_us(void)
+{
+   struct timespec ts;
+   clock_gettime(CLOCK_MONOTONIC, &ts);
+   return (long long)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+
+/* "resident MB / shared MB" of this process, for the log */
+static void
+ohos_mem_mb(long *rss, long *shr)
+{
+   long a = 0, b = 0, c = 0;
+   FILE *f = fopen("/proc/self/statm", "r");
+   *rss = *shr = -1;
+   if (!f)
+      return;
+   if (fscanf(f, "%ld %ld %ld", &a, &b, &c) == 3) {
+      *rss = b * 4 / 1024;
+      *shr = c * 4 / 1024;
+   }
+   fclose(f);
+}
+
+static int
+ohos_yuv_to_rgba_memfd(const BufferHandle *h, int *out_stride, bool *pooled)
 {
    int w = h->width, ht = h->height, ys = h->stride;
    int fmt = h->format;
@@ -114,16 +182,22 @@ ohos_yuv_to_rgba_memfd(const BufferHandle *h, int *out_stride)
    }
    int out_pitch = w * 4;
    size_t outsz = (size_t)out_pitch * ht;
-   int mfd = memfd_create("ohos-yuv", MFD_CLOEXEC);
-   if (mfd < 0 || ftruncate(mfd, outsz) != 0) {
-      if (mfd >= 0)
-         close(mfd);
-      munmap(in, insz);
-      return -1;
+   *pooled = true;
+   int mfd = ohos_yuv_pool_fd(outsz);
+   if (mfd < 0) {
+      *pooled = false;
+      mfd = memfd_create("ohos-yuv", MFD_CLOEXEC);
+      if (mfd < 0 || ftruncate(mfd, outsz) != 0) {
+         if (mfd >= 0)
+            close(mfd);
+         munmap(in, insz);
+         return -1;
+      }
    }
    uint8_t *out = mmap(NULL, outsz, PROT_READ | PROT_WRITE, MAP_SHARED, mfd, 0);
    if (out == MAP_FAILED) {
-      close(mfd);
+      if (!*pooled)
+         close(mfd);
       munmap(in, insz);
       return -1;
    }
@@ -189,11 +263,24 @@ ohos_create_image_from_native_buffer(_EGLDisplay *disp,
       return NULL;
 
    int yuv_fd = -1, yuv_stride = 0;
+   bool yuv_pooled = false;
    if (handle->format == PIXEL_FMT_YCBCR_420_SP ||
        handle->format == PIXEL_FMT_YCRCB_420_SP ||
        handle->format == PIXEL_FMT_YCBCR_420_P ||
        handle->format == PIXEL_FMT_YCRCB_420_P) {
-      yuv_fd = ohos_yuv_to_rgba_memfd(handle, &yuv_stride);
+      static unsigned yuv_count;
+      static long long yuv_total_us;
+      long long t0 = ohos_now_us();
+      yuv_fd = ohos_yuv_to_rgba_memfd(handle, &yuv_stride, &yuv_pooled);
+      yuv_total_us += ohos_now_us() - t0;
+      if (++yuv_count % 30 == 0) {
+         long rss, shr;
+         ohos_mem_mb(&rss, &shr);
+         _eglLog(_EGL_WARNING,
+                 "ohos: yuv->rgba %dx%d: %u frames, avg %lld ms each; process memory %ld MB (shared %ld MB)",
+                 handle->width, handle->height, yuv_count,
+                 yuv_total_us / yuv_count / 1000, rss, shr);
+      }
       if (yuv_fd < 0)
          return NULL;
    }
@@ -237,7 +324,7 @@ ohos_create_image_from_native_buffer(_EGLDisplay *disp,
          __DRI_YUV_CHROMA_SITING_0, __DRI_YUV_CHROMA_SITING_0, 0, &error,
          priv);
    }
-   if (yuv_fd >= 0)
+   if (yuv_fd >= 0 && !yuv_pooled)
       close(yuv_fd);
    if (!img)
       _eglLog(_EGL_WARNING,
