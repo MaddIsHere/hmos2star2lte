@@ -31,7 +31,7 @@ See [docs/PORTING_STATUS.md](docs/PORTING_STATUS.md) for what works and what has
 
 
 ## Building
-Full, step by step guide: docs/BUILD_AND_FLASH.md.                                                                                                          
+Full, step by step guide: [docs/BUILD_AND_FLASH.md](docs/BUILD_AND_FLASH.md).                                                                                                          
 
 You must find a full OTA Update zip for the Pura 70 first                    
 
@@ -44,7 +44,7 @@ scripts/build_rom.sh --ota update_full_base.zip --stock-boot backup/boot_stock.i
 scripts/flash.sh install                      # first time (then Wipe -> Format Data); later: flash.sh update
 scripts/flash.sh logs                         # pull the boot logs from the phone
 ```
-The GPU driver (Mesa llvmpipe + LLVM) is not built on your PC: GitHub Actions does it, see docs/GITHUB_ACTIONS.md. The libraries already in patches/11-gpu-mesa/files/ are used unless you replace them with a new build.
+The GPU driver (Mesa llvmpipe + LLVM) is not built on your PC: GitHub Actions does it, see [docs/GITHUB_ACTIONS.md](docs/GITHUB_ACTIONS.md). The libraries already in patches/11-gpu-mesa/files/ are used unless you replace them with a new build.
 
 Needs Linux/WSL with Python 3.8+, e2fsprogs >= 1.43 (mke2fs -d, debugfs, e2fsck), about 25 GB free. Before the first run, check the partition names in devices/star2lte/device.json against ls -l /dev/block/by-name in TWRP.
 
