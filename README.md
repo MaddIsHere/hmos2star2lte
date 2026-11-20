@@ -45,7 +45,7 @@ Output: `system.img`, `vendor.img`, ... as ext4, `boot.img`, `install_clean.sh`,
 
 ## Flashing
 
-!! The `SYSTEM` partition on the phone MUST be at least 13GB. !!                                                                                        
+!! The `SYSTEM` partition on the phone MUST be at least 11.3GB. !!                                                                                        
 !! RUN IN ORDER !!
 Replace "/path/to/...img" with your path!
 ```
