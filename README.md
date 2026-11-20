@@ -25,6 +25,7 @@ See [docs/PORTING_STATUS.md](docs/PORTING_STATUS.md) for what works and what has
 | Display, touch | ✅ Works |
 | Volume Up/Down/Power | ✅ Works |
 | Boot on S9 & N9 | ⚠️ Probably |
+| Boot on 4GB of RAM | ⚠️ Probably |
 | GPU | ❌ No |
 | Everything else | ❌ No |
 
