@@ -31,19 +31,24 @@ See [docs/PORTING_STATUS.md](docs/PORTING_STATUS.md) for what works and what has
 
 
 ## Building
+Full, step by step guide: docs/BUILD_AND_FLASH.md.                                                                                                          
+
+You must find a full OTA Update zip for the Pura 70 first                    
 
 ```
-tools/fetch_tools.sh                  # erofs tools (reads the OTA)
-build/build_preinit.sh                # hmos-preinit -> prebuilt/ramdisk/init (needs aarch64-linux-gnu-gcc)
-python3 hmos2star2lte.py --ota update_full_base.zip --kernel Image.gz-dtb --stock-boot stock_boot.img --out out
+tools/fetch_tools.sh                          # erofs tools (reads the OTA)
+scripts/build_kernel.sh                       # kernel -> kernel-out/Image, dtb.img   (docs/KERNEL.md)
+build/build_display.sh                        # display composer + ION allocator (after changing src/display)
+scripts/flash.sh backup                       # phone in TWRP: save the stock boot.img first
+scripts/build_rom.sh --ota update_full_base.zip --stock-boot backup/boot_stock.img
+scripts/flash.sh install                      # first time (then Wipe -> Format Data); later: flash.sh update
+scripts/flash.sh logs                         # pull the boot logs from the phone
 ```
+The GPU driver (Mesa llvmpipe + LLVM) is not built on your PC: GitHub Actions does it, see docs/GITHUB_ACTIONS.md. The libraries already in patches/11-gpu-mesa/files/ are used unless you replace them with a new build.
 
-Needs Linux/WSL with Python 3.8+, `e2fsprogs` >= 1.43 (`mke2fs -d`, `debugfs`, `e2fsck`), about 25 GB free.
-Before the first run, check the partition names in `devices/star2lte/device.json` against
-`ls -l /dev/block/by-name` in TWRP.
+Needs Linux/WSL with Python 3.8+, e2fsprogs >= 1.43 (mke2fs -d, debugfs, e2fsck), about 25 GB free. Before the first run, check the partition names in devices/star2lte/device.json against ls -l /dev/block/by-name in TWRP.
 
-Output: `system.img`, `vendor.img`, ... as ext4, `boot.img`, `install_clean.sh`, `update_keep_data.sh`,
-
+Output: system.img, vendor.img, ... as ext4, boot.img, install_clean.sh, update_keep_data.sh, get_logs.sh.
 ## Flashing
 
 !! The `SYSTEM` partition on the phone MUST be at least 11.3GB. !!                                                                                        
