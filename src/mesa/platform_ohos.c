@@ -167,21 +167,36 @@ ohos_mem_mb(long *rss, long *shr)
    fclose(f);
 }
 
+/* The video-style YUV layers are drawn small (the whole UI is rendered at 1/8 of the panel), and the dma-buf they live
+ * in is uncached: reading it a byte at a time cost ~1 s per 1216x2688 frame.  So the frame is converted to an image
+ * OHOS_YUV_DIV times smaller (nearest sampling) reading whole source rows with wide copies; the output size is
+ * returned in *out_w / *out_h and is what gets imported. */
+#define OHOS_YUV_DIV 4
+#define OHOS_YUV_MAXSTRIDE 8192
+
 static int
-ohos_yuv_to_rgba_memfd(const BufferHandle *h, int *out_stride, bool *pooled)
+ohos_yuv_to_rgba_memfd(const BufferHandle *h, int *out_stride, bool *pooled,
+                       int *out_w, int *out_h)
 {
    int w = h->width, ht = h->height, ys = h->stride;
    int fmt = h->format;
    size_t insz = (size_t)ys * ht * 3 / 2;
-   if (w <= 0 || ht <= 0 || ys < w)
+   if (w <= 0 || ht <= 0 || ys < w || ys > OHOS_YUV_MAXSTRIDE)
       return -1;
+   int div = OHOS_YUV_DIV;
+   int ow = w / div, oh = ht / div;
+   if (ow < 2 || oh < 2) {
+      div = 1;
+      ow = w;
+      oh = ht;
+   }
    uint8_t *in = mmap(NULL, insz, PROT_READ, MAP_SHARED, h->fd, 0);
    if (in == MAP_FAILED) {
       _eglLog(_EGL_WARNING, "ohos: yuv mmap failed errno %d", errno);
       return -1;
    }
-   int out_pitch = w * 4;
-   size_t outsz = (size_t)out_pitch * ht;
+   int out_pitch = ow * 4;
+   size_t outsz = (size_t)out_pitch * oh;
    *pooled = true;
    int mfd = ohos_yuv_pool_fd(outsz);
    if (mfd < 0) {
@@ -201,43 +216,49 @@ ohos_yuv_to_rgba_memfd(const BufferHandle *h, int *out_stride, bool *pooled)
       munmap(in, insz);
       return -1;
    }
-   const uint8_t *yp = in;
    int semi = (fmt == PIXEL_FMT_YCBCR_420_SP || fmt == PIXEL_FMT_YCRCB_420_SP);
    int cs = semi ? ys : ys / 2;
    const uint8_t *c0 = in + (size_t)ys * ht;
    const uint8_t *c1 = c0 + (size_t)cs * ((ht + 1) / 2);
-   for (int y = 0; y < ht; y++) {
-      uint8_t *o = out + (size_t)y * out_pitch;
-      const uint8_t *yr = yp + (size_t)y * ys;
-      int cy = y >> 1;
-      const uint8_t *cu = NULL, *cv = NULL;
-      int cstep = 1;
+   uint8_t yrow[OHOS_YUV_MAXSTRIDE], ur[OHOS_YUV_MAXSTRIDE], vr[OHOS_YUV_MAXSTRIDE];
+   for (int oy = 0; oy < oh; oy++) {
+      int sy = oy * div;
+      int cy = sy >> 1;
+      uint8_t *o = out + (size_t)oy * out_pitch;
+      memcpy(yrow, in + (size_t)sy * ys, w);         /* whole rows: wide loads from the uncached buffer */
+      const uint8_t *cu, *cv;
+      int cstep;
       if (semi) {
-         const uint8_t *c = c0 + (size_t)cy * cs;
-         if (fmt == PIXEL_FMT_YCBCR_420_SP) { cu = c; cv = c + 1; }
-         else { cv = c; cu = c + 1; }
+         memcpy(ur, c0 + (size_t)cy * cs, cs);
+         if (fmt == PIXEL_FMT_YCBCR_420_SP) { cu = ur; cv = ur + 1; }
+         else { cv = ur; cu = ur + 1; }
          cstep = 2;
-      } else if (fmt == PIXEL_FMT_YCBCR_420_P) {
-         cu = c0 + (size_t)cy * cs; cv = c1 + (size_t)cy * cs;
       } else {
-         cv = c0 + (size_t)cy * cs; cu = c1 + (size_t)cy * cs;
-      }
-      for (int x = 0; x < w; x += 2) {
-         int d = cu[(x >> 1) * cstep] - 128, e = cv[(x >> 1) * cstep] - 128;
-         int rv = 409 * e + 128, gv = -100 * d - 208 * e + 128, bv = 516 * d + 128;
-         for (int k = 0; k < 2 && x + k < w; k++) {
-            int c = (yr[x + k] - 16) * 298;
-            o[0] = ohos_clamp8((c + rv) >> 8);
-            o[1] = ohos_clamp8((c + gv) >> 8);
-            o[2] = ohos_clamp8((c + bv) >> 8);
-            o[3] = 255;
-            o += 4;
+         const uint8_t *p0 = c0 + (size_t)cy * cs, *p1 = c1 + (size_t)cy * cs;
+         if (fmt == PIXEL_FMT_YCBCR_420_P) {
+            memcpy(ur, p0, cs); memcpy(vr, p1, cs);
+         } else {
+            memcpy(vr, p0, cs); memcpy(ur, p1, cs);
          }
+         cu = ur; cv = vr;
+         cstep = 1;
+      }
+      for (int ox = 0; ox < ow; ox++) {
+         int sx = ox * div;
+         int d = cu[(sx >> 1) * cstep] - 128, e = cv[(sx >> 1) * cstep] - 128;
+         int c = (yrow[sx] - 16) * 298;
+         o[0] = ohos_clamp8((c + 409 * e + 128) >> 8);
+         o[1] = ohos_clamp8((c - 100 * d - 208 * e + 128) >> 8);
+         o[2] = ohos_clamp8((c + 516 * d + 128) >> 8);
+         o[3] = 255;
+         o += 4;
       }
    }
    munmap(out, outsz);
    munmap(in, insz);
    *out_stride = out_pitch;
+   *out_w = ow;
+   *out_h = oh;
    return mfd;
 }
 
@@ -264,6 +285,7 @@ ohos_create_image_from_native_buffer(_EGLDisplay *disp,
 
    int yuv_fd = -1, yuv_stride = 0;
    bool yuv_pooled = false;
+   int img_w = handle->width, img_h = handle->height;
    if (handle->format == PIXEL_FMT_YCBCR_420_SP ||
        handle->format == PIXEL_FMT_YCRCB_420_SP ||
        handle->format == PIXEL_FMT_YCBCR_420_P ||
@@ -271,15 +293,15 @@ ohos_create_image_from_native_buffer(_EGLDisplay *disp,
       static unsigned yuv_count;
       static long long yuv_total_us;
       long long t0 = ohos_now_us();
-      yuv_fd = ohos_yuv_to_rgba_memfd(handle, &yuv_stride, &yuv_pooled);
+      yuv_fd = ohos_yuv_to_rgba_memfd(handle, &yuv_stride, &yuv_pooled, &img_w, &img_h);
       yuv_total_us += ohos_now_us() - t0;
       if (++yuv_count % 30 == 0) {
          long rss, shr;
          ohos_mem_mb(&rss, &shr);
          _eglLog(_EGL_WARNING,
-                 "ohos: yuv->rgba %dx%d: %u frames, avg %lld ms each; process memory %ld MB (shared %ld MB)",
-                 handle->width, handle->height, yuv_count,
-                 yuv_total_us / yuv_count / 1000, rss, shr);
+                 "ohos: yuv->rgba %dx%d -> %dx%d: %u frames, avg %lld us each; process memory %ld MB (shared %ld MB)",
+                 handle->width, handle->height, img_w, img_h, yuv_count,
+                 yuv_total_us / yuv_count, rss, shr);
       }
       if (yuv_fd < 0)
          return NULL;
@@ -312,13 +334,13 @@ ohos_create_image_from_native_buffer(_EGLDisplay *disp,
    }
 
    struct dri_image *img = dri2_from_dma_bufs(
-      dri2_dpy->dri_screen_render_gpu, handle->width, handle->height, fourcc,
+      dri2_dpy->dri_screen_render_gpu, img_w, img_h, fourcc,
       DRM_FORMAT_MOD_LINEAR, fds, nplanes, strides, offsets,
       __DRI_YUV_COLOR_SPACE_ITU_REC601, __DRI_YUV_NARROW_RANGE,
       __DRI_YUV_CHROMA_SITING_0, __DRI_YUV_CHROMA_SITING_0, 0, &error, priv);
    if (!img) {
       img = dri2_from_dma_bufs(
-         dri2_dpy->dri_screen_render_gpu, handle->width, handle->height,
+         dri2_dpy->dri_screen_render_gpu, img_w, img_h,
          fourcc, DRM_FORMAT_MOD_INVALID, fds, nplanes, strides, offsets,
          __DRI_YUV_COLOR_SPACE_ITU_REC601, __DRI_YUV_NARROW_RANGE,
          __DRI_YUV_CHROMA_SITING_0, __DRI_YUV_CHROMA_SITING_0, 0, &error,
